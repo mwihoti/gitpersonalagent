@@ -16,12 +16,27 @@ const FIELDS = [
   { name: 'Repo',              type: 'singleLineText' },
   { name: 'Effort',            type: 'singleSelect',   options: { choices: [{ name: 'low' }, { name: 'medium' }, { name: 'high' }] } },
   { name: 'Status',            type: 'singleSelect',   options: { choices: [{ name: 'New' }, { name: 'In Progress' }, { name: 'Done' }] } },
+  { name: 'Priority',          type: 'singleSelect',   options: { choices: [{ name: 'High' }, { name: 'Medium' }, { name: 'Low' }] } },
+  { name: 'Owner',             type: 'singleLineText' },
+  { name: 'Due Date',          type: 'date',           options: { dateFormat: { name: 'iso' } } },
   { name: 'Why It Qualifies',  type: 'multilineText' },
   { name: 'Suggested Action',  type: 'multilineText' },
   { name: 'Clarity Tip',       type: 'multilineText' },
   { name: 'Why It Matters',    type: 'multilineText' },
   { name: 'Quick Plan',        type: 'multilineText' },
   { name: 'Issue URL',         type: 'url' },
+  { name: 'PR URL',            type: 'url' },
+  { name: 'Next Step',         type: 'multilineText' },
+  { name: 'Activity Log',      type: 'multilineText' },
+  {
+    name: 'Last Updated',
+    type: 'dateTime',
+    options: {
+      dateFormat: { name: 'iso' },
+      timeFormat: { name: '24hour' },
+      timeZone: 'utc',
+    },
+  },
   { name: 'Code Skeleton',     type: 'multilineText' },
 ];
 
@@ -42,7 +57,11 @@ async function createField(field) {
 
   if (res.ok) {
     console.log(`  ✓ Created: ${field.name}`);
-  } else if (data.error?.type === 'DUPLICATE_FIELD_NAME' || data.error?.message?.includes('already exists')) {
+  } else if (
+    data.error?.type === 'DUPLICATE_FIELD_NAME' ||
+    data.error?.type === 'DUPLICATE_OR_EMPTY_FIELD_NAME' ||
+    data.error?.message?.includes('already exists')
+  ) {
     console.log(`  ~ Skipped (exists): ${field.name}`);
   } else if (res.status === 403) {
     console.error('\n  Permission denied. Update your Airtable token:');

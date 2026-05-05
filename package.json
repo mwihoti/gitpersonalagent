@@ -6,7 +6,8 @@
   "scripts": {
     "scan": "node agent.js --scan",
     "start": "node agent.js --schedule",
-    "setup": "node scripts/setup-airtable.js"
+    "setup": "node scripts/setup-airtable.js",
+    "dev": "node dev-server.js"
   },
   "keywords": [
     "stacks",

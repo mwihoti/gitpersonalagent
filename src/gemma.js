@@ -40,23 +40,28 @@ STRICT OUTPUT FORMAT (return ONLY valid JSON, no markdown fences, no extra text)
 
 Be encouraging but realistic. Never suggest trivial or invalid changes. Return ONLY the JSON object.`;
 
-function summarizeNews(news) {
+function summarizeNews(news, limit = 25) {
   const items = [
     ...news.githubReleases.map(n => `[${n.source}] ${n.title}`),
     ...news.hackerNews.map(n => `[HN] ${n.title}`),
     ...news.rssFeeds.map(n => `[${n.source}] ${n.title}`),
   ];
-  return items.slice(0, 25).join('\n');
+  return items.slice(0, limit).join('\n');
 }
 
-function buildUserMessage(repoData, news) {
+function buildUserMessage(repoData, news, options = {}) {
+  const {
+    newsLimit = 25,
+    scanLabel = 'last 30 days + all good-first-issues',
+  } = options;
+
   return `Today is ${new Date().toISOString().slice(0, 10)}.
 
-=== GITHUB SCAN (last 30 days + all good-first-issues) ===
+=== GITHUB SCAN (${scanLabel}) ===
 ${JSON.stringify(repoData, null, 2)}
 
 === LATEST TECH NEWS (titles only) ===
-${summarizeNews(news)}
+${summarizeNews(news, newsLimit)}
 
 Analyze the above data. Return a contest digest with UP TO 3 PR opportunities per repo.
 For each opportunity include a real code_skeleton — Clarity skeleton or JS/TS snippet the developer can immediately use.
@@ -65,14 +70,20 @@ Focus on good-first-issue and bug-labeled issues first.`;
 
 // Trim repo data before sending to cloud APIs — keeps top 6 issues per repo
 // (already sorted: good-first + bugs first), truncates bodies, drops recentPRs.
-function trimForCloud(repoData) {
+function trimForCloud(repoData, options = {}) {
+  const {
+    issuesPerRepo = 6,
+    bodyChars = 200,
+    includeRepoUrl = true,
+  } = options;
+
   return repoData.map(r => ({
     repo: r.repo,
-    repoUrl: r.repoUrl,
-    issues: r.issues.slice(0, 6).map(i => ({
+    ...(includeRepoUrl ? { repoUrl: r.repoUrl } : {}),
+    issues: r.issues.slice(0, issuesPerRepo).map(i => ({
       number: i.number,
       title: i.title,
-      body: (i.body || '').slice(0, 200),
+      body: (i.body || '').slice(0, bodyChars),
       labels: i.labels,
       url: i.url,
     })),
@@ -82,7 +93,14 @@ function trimForCloud(repoData) {
 // Fallback chain (cloud): gemini-2.5-flash-lite → gemini-2.5-flash → Groq.
 // Falls back to local Ollama when no cloud keys are set.
 async function analyzeWithGemma(repoData, news) {
-  const userMessage = buildUserMessage(trimForCloud(repoData), news);
+  const trimmedRepoData = trimForCloud(repoData, {
+    issuesPerRepo: 4,
+    bodyChars: 120,
+  });
+  const userMessage = buildUserMessage(trimmedRepoData, news, {
+    newsLimit: 12,
+    scanLabel: 'top prioritized issues per repo',
+  });
   if (process.env.GEMINI_API_KEY) {
     return analyzeWithGemini(userMessage);
   }
@@ -148,34 +166,51 @@ async function analyzeWithGemini(userMessage) {
 
 async function analyzeWithGroq(userMessage) {
   const model = 'llama-3.3-70b-versatile';
-  console.log(`  Sending to Groq (${model})...`);
-
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+  const attempts = [
+    { label: 'full', message: userMessage },
+    {
+      label: 'compact',
+      message: userMessage
+        .replace(/\n\s{2,}/g, '\n')
+        .slice(0, 9000),
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-      temperature: 0.3,
-      max_tokens: 8192,
-    }),
-    signal: AbortSignal.timeout(120_000),
-  });
+  ];
 
-  if (!res.ok) {
+  for (const attempt of attempts) {
+    console.log(`  Sending to Groq (${model}, ${attempt.label})...`);
+
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: attempt.message },
+        ],
+        temperature: 0.3,
+        max_tokens: 4096,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const raw = data.choices?.[0]?.message?.content || '';
+      return parseJSON(raw);
+    }
+
     const err = await res.text();
+    if (res.status === 413 && attempt.label !== 'compact') {
+      console.warn('  Groq request too large — retrying with compact payload...');
+      continue;
+    }
+
     throw new Error(`Groq error: ${res.status} ${err}`);
   }
-
-  const data = await res.json();
-  const raw = data.choices?.[0]?.message?.content || '';
-  return parseJSON(raw);
 }
 
 async function analyzeWithOllama(userMessage) {

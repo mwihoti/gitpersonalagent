@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dan Agent Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Stacks contribution CRM</p>
+          <h1>Plan your next PRs. Track the work that actually ships.</h1>
+          <p class="hero-copy">
+            Review the agent's daily opportunities, set priorities, assign next steps,
+            and keep an activity log for every contest entry.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="run-scan-button" class="button button-primary">Run scan now</button>
+          <div id="scan-status" class="status-pill">Ready</div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel summary-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Overview</p>
+              <h2>Daily pipeline</h2>
+            </div>
+            <div id="storage-badge" class="storage-badge">Loading</div>
+          </div>
+          <div class="summary-grid">
+            <article class="metric-card">
+              <span class="metric-label">Tracked opportunities</span>
+              <strong id="metric-total" class="metric-value">0</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">In progress</span>
+              <strong id="metric-progress" class="metric-value">0</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Done</span>
+              <strong id="metric-done" class="metric-value">0</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">High priority</span>
+              <strong id="metric-high" class="metric-value">0</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel filters-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Workbench</p>
+              <h2>Opportunity queue</h2>
+            </div>
+          </div>
+          <div class="filters">
+            <label>
+              <span>Status</span>
+              <select id="status-filter">
+                <option value="">All</option>
+                <option value="New">New</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Done">Done</option>
+              </select>
+            </label>
+            <label>
+              <span>Priority</span>
+              <select id="priority-filter">
+                <option value="">All</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+              </select>
+            </label>
+            <label class="search-field">
+              <span>Search</span>
+              <input id="search-input" type="search" placeholder="Repo, issue, next step">
+            </label>
+          </div>
+
+          <div class="board">
+            <div class="list-panel">
+              <div id="opportunities-list" class="opportunities-list"></div>
+            </div>
+            <aside class="detail-panel">
+              <div id="detail-empty" class="detail-empty">
+                Select an opportunity to inspect the issue, create a plan, and log work.
+              </div>
+
+              <form id="detail-form" class="detail-form hidden">
+                <div class="detail-header">
+                  <div>
+                    <p id="detail-repo" class="detail-repo"></p>
+                    <h3 id="detail-title"></h3>
+                  </div>
+                  <a id="detail-issue-link" class="button button-secondary" target="_blank" rel="noreferrer">Open issue</a>
+                </div>
+
+                <div class="detail-grid">
+                  <label>
+                    <span>Status</span>
+                    <select id="detail-status">
+                      <option value="New">New</option>
+                      <option value="In Progress">In Progress</option>
+                      <option value="Done">Done</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Priority</span>
+                    <select id="detail-priority">
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Owner</span>
+                    <input id="detail-owner" type="text" placeholder="Dan">
+                  </label>
+                  <label>
+                    <span>Due date</span>
+                    <input id="detail-due-date" type="date">
+                  </label>
+                </div>
+
+                <label>
+                  <span>Next step</span>
+                  <textarea id="detail-next-step" rows="3" placeholder="Write the first concrete action for this PR."></textarea>
+                </label>
+
+                <label>
+                  <span>PR URL</span>
+                  <input id="detail-pr-url" type="url" placeholder="https://github.com/.../pull/...">
+                </label>
+
+                <label>
+                  <span>Activity log</span>
+                  <textarea id="detail-activity-log" rows="6" placeholder="Keep a running work log: investigation, blockers, commits, review notes."></textarea>
+                </label>
+
+                <label>
+                  <span>Quick plan</span>
+                  <textarea id="detail-quick-plan" rows="3" placeholder="Turn the daily digest into an execution plan."></textarea>
+                </label>
+
+                <div class="detail-actions">
+                  <button type="submit" class="button button-primary">Save changes</button>
+                  <span id="save-status" class="save-status"></span>
+                </div>
+
+                <section class="context-grid">
+                  <article class="context-card">
+                    <h4>Why it qualifies</h4>
+                    <p id="detail-qualifies"></p>
+                  </article>
+                  <article class="context-card">
+                    <h4>Suggested action</h4>
+                    <p id="detail-action"></p>
+                  </article>
+                  <article class="context-card">
+                    <h4>Why it matters</h4>
+                    <p id="detail-matters"></p>
+                  </article>
+                  <article class="context-card">
+                    <h4>Validation tip</h4>
+                    <p id="detail-tip"></p>
+                  </article>
+                </section>
+
+                <section class="code-card">
+                  <div class="code-card-header">
+                    <h4>Starter code</h4>
+                  </div>
+                  <pre id="detail-code"></pre>
+                </section>
+              </form>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
