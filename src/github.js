@@ -123,35 +123,37 @@ async function scanRepos() {
 
   for (const repo of config.github.repos) {
     console.log(`  Scanning ${repo}...`);
-
-    const [recent, goodFirst, bugs, recentPRs] = await Promise.all([
-      fetchRecentIssues(repo),
-      fetchGoodFirstIssues(repo),
-      fetchBugIssues(repo),
-      fetchRecentPRActivity(repo),
-    ]);
-
-    // Merge, deduplicate, keep good first issues at the top
-    const merged = dedup([...goodFirst, ...bugs, ...recent]);
-    const issues = merged.map(shape);
-
-    const labelSummary = [
-      goodFirst.length ? `${goodFirst.length} good-first` : '',
-      bugs.length ? `${bugs.length} bugs` : '',
-    ].filter(Boolean).join(', ');
-
-    console.log(`    → ${issues.length} issues (${labelSummary || 'recent activity'})`);
-
-    results.push({
-      repo,
-      repoUrl: `https://github.com/${repo}`,
-      totalOpenIssues: recent.length,
-      issues,
-      recentPRs,
-    });
+    const result = await scanRepo(repo);
+    console.log(`    → ${result.issues.length} issues (${result.labelSummary})`);
+    results.push(result);
   }
 
   return results;
 }
 
-module.exports = { scanRepos };
+async function scanRepo(repo) {
+  const [recent, goodFirst, bugs, recentPRs] = await Promise.all([
+    fetchRecentIssues(repo),
+    fetchGoodFirstIssues(repo),
+    fetchBugIssues(repo),
+    fetchRecentPRActivity(repo),
+  ]);
+
+  const merged = dedup([...goodFirst, ...bugs, ...recent]);
+  const issues = merged.map(shape);
+  const labelSummary = [
+    goodFirst.length ? `${goodFirst.length} good-first` : '',
+    bugs.length ? `${bugs.length} bugs` : '',
+  ].filter(Boolean).join(', ');
+
+  return {
+    repo,
+    repoUrl: `https://github.com/${repo}`,
+    totalOpenIssues: recent.length,
+    issues,
+    recentPRs,
+    labelSummary: labelSummary || 'recent activity',
+  };
+}
+
+module.exports = { scanRepos, scanRepo };

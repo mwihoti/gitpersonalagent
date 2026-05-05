@@ -7,6 +7,7 @@ const scanHandler = require('./api/scan');
 const healthHandler = require('./api/health');
 const opportunitiesHandler = require('./api/opportunities/index');
 const opportunityHandler = require('./api/opportunities/[id]');
+const repoIssuesHandler = require('./api/repo-issues');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);
@@ -50,6 +51,9 @@ async function routeApi(req, res, pathname, query) {
   }
   if (pathname === '/api/opportunities') {
     return opportunitiesHandler(req, res);
+  }
+  if (pathname === '/api/repo-issues') {
+    return repoIssuesHandler(req, res);
   }
 
   const match = pathname.match(/^\/api\/opportunities\/(.+)$/);

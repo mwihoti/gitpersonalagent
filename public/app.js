@@ -3,6 +3,8 @@ const state = {
   filtered: [],
   selectedId: null,
   storage: 'loading',
+  currentPage: 1,
+  pageSize: 20,
 };
 
 const els = {
@@ -36,6 +38,17 @@ const els = {
   detailTip: document.getElementById('detail-tip'),
   detailCode: document.getElementById('detail-code'),
   saveStatus: document.getElementById('save-status'),
+  paginationSummary: document.getElementById('pagination-summary'),
+  prevPageButton: document.getElementById('prev-page-button'),
+  nextPageButton: document.getElementById('next-page-button'),
+  seeMoreButton: document.getElementById('see-more-button'),
+  repoForm: document.getElementById('repo-form'),
+  repoInput: document.getElementById('repo-input'),
+  repoStatus: document.getElementById('repo-status'),
+  repoResults: document.getElementById('repo-results'),
+  repoResultsName: document.getElementById('repo-results-name'),
+  repoResultsCount: document.getElementById('repo-results-count'),
+  repoIssuesList: document.getElementById('repo-issues-list'),
 };
 
 function normalizeText(value) {
@@ -74,6 +87,10 @@ function applyFilters() {
     return matchesStatus && matchesPriority && matchesSearch;
   });
 
+  const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
+  if (state.currentPage > totalPages) state.currentPage = totalPages;
+  if (state.currentPage < 1) state.currentPage = 1;
+
   renderList();
 }
 
@@ -99,13 +116,26 @@ function formatHistoryDate(value) {
 
 function renderList() {
   if (!state.filtered.length) {
+    els.paginationSummary.textContent = 'Showing 0 of 0';
+    els.prevPageButton.disabled = true;
+    els.nextPageButton.disabled = true;
+    els.seeMoreButton.disabled = true;
     els.list.innerHTML = '<div class="detail-empty">No opportunities match the current filters.</div>';
     showEmptyState();
     return;
   }
 
+  const start = (state.currentPage - 1) * state.pageSize;
+  const end = start + state.pageSize;
+  const visibleItems = state.filtered.slice(start, end);
+  const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
+  els.paginationSummary.textContent = `Showing ${start + 1}-${Math.min(end, state.filtered.length)} of ${state.filtered.length}`;
+  els.prevPageButton.disabled = state.currentPage === 1;
+  els.nextPageButton.disabled = state.currentPage >= totalPages;
+  els.seeMoreButton.disabled = state.currentPage >= totalPages;
+
   let lastDate = null;
-  els.list.innerHTML = state.filtered.map(item => {
+  els.list.innerHTML = visibleItems.map(item => {
     const dateHeader = item.date !== lastDate
       ? `<div class="history-divider">${escapeHtml(formatHistoryDate(item.date))}</div>`
       : '';
@@ -195,6 +225,7 @@ async function loadOpportunities() {
   const payload = await res.json();
   state.opportunities = payload.opportunities || [];
   state.storage = payload.storage || 'unknown';
+  state.currentPage = 1;
   renderStats();
   applyFilters();
 
@@ -204,6 +235,55 @@ async function loadOpportunities() {
     selectOpportunity(state.selectedId);
   }
   els.scanStatus.textContent = 'Ready';
+}
+
+function renderRepoIssues(repo) {
+  els.repoResults.classList.remove('hidden');
+  els.repoResultsName.textContent = repo.repo;
+  els.repoResultsCount.textContent = `${repo.issues.length} open issues found`;
+
+  if (!repo.issues.length) {
+    els.repoIssuesList.innerHTML = '<div class="detail-empty">No open issues were found for this repository.</div>';
+    return;
+  }
+
+  els.repoIssuesList.innerHTML = repo.issues.slice(0, 20).map(issue => `
+    <article class="repo-issue-card">
+      <div class="list-item-header">
+        <h4>${escapeHtml(issue.title)}</h4>
+        <a href="${escapeHtml(issue.url)}" target="_blank" rel="noreferrer" class="button button-secondary">Open</a>
+      </div>
+      <p>${escapeHtml((issue.body || '').slice(0, 180) || 'No issue description provided.')}</p>
+      <div class="list-meta">
+        ${createTag(`#${issue.number}`)}
+        ${createTag(issue.updatedAt ? issue.updatedAt.slice(0, 10) : 'Open')}
+        ${(issue.labels || []).slice(0, 4).map(label => createTag(escapeHtml(label))).join('')}
+      </div>
+    </article>
+  `).join('');
+}
+
+async function checkRepoIssues(event) {
+  event.preventDefault();
+  const repo = els.repoInput.value.trim();
+  if (!repo) {
+    els.repoStatus.textContent = 'Enter a GitHub repo URL or owner/repo.';
+    return;
+  }
+
+  els.repoStatus.textContent = 'Checking repository issues';
+  const res = await fetch('/api/repo-issues', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repo }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to inspect repository');
+  }
+
+  renderRepoIssues(data.repo);
+  els.repoStatus.textContent = `Loaded ${data.repo.issues.length} issues for ${data.repo.repo}`;
 }
 
 async function saveCurrentOpportunity(event) {
@@ -264,10 +344,38 @@ async function triggerScan() {
 function wireEvents() {
   els.statusFilter.addEventListener('change', applyFilters);
   els.priorityFilter.addEventListener('change', applyFilters);
-  els.searchInput.addEventListener('input', applyFilters);
+  els.searchInput.addEventListener('input', () => {
+    state.currentPage = 1;
+    applyFilters();
+  });
+  els.prevPageButton.addEventListener('click', () => {
+    if (state.currentPage > 1) {
+      state.currentPage -= 1;
+      renderList();
+    }
+  });
+  els.nextPageButton.addEventListener('click', () => {
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
+    if (state.currentPage < totalPages) {
+      state.currentPage += 1;
+      renderList();
+    }
+  });
+  els.seeMoreButton.addEventListener('click', () => {
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
+    if (state.currentPage < totalPages) {
+      state.currentPage += 1;
+      renderList();
+    }
+  });
   els.detailForm.addEventListener('submit', event => {
     saveCurrentOpportunity(event).catch(error => {
       els.saveStatus.textContent = error.message;
+    });
+  });
+  els.repoForm.addEventListener('submit', event => {
+    checkRepoIssues(event).catch(error => {
+      els.repoStatus.textContent = error.message;
     });
   });
   els.runScanButton.addEventListener('click', () => {

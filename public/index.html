@@ -55,11 +55,40 @@
           </div>
         </section>
 
+        <section class="panel repo-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Repo Scout</p>
+              <h2>Check any GitHub project</h2>
+            </div>
+          </div>
+          <form id="repo-form" class="repo-form">
+            <label class="repo-input">
+              <span>GitHub repo</span>
+              <input id="repo-input" type="text" placeholder="https://github.com/owner/repo or owner/repo">
+            </label>
+            <button type="submit" class="button button-primary">Check issues</button>
+            <span id="repo-status" class="status-pill">Paste a repo to inspect open issues.</span>
+          </form>
+          <div id="repo-results" class="repo-results hidden">
+            <div class="repo-results-header">
+              <div>
+                <p id="repo-results-name" class="detail-repo"></p>
+                <h3 id="repo-results-count"></h3>
+              </div>
+            </div>
+            <div id="repo-issues-list" class="repo-issues-list"></div>
+          </div>
+        </section>
+
         <section class="panel filters-panel">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Workbench</p>
               <h2>Opportunity queue</h2>
+            </div>
+            <div class="pagination-summary">
+              <span id="pagination-summary">Showing 0 of 0</span>
             </div>
           </div>
           <div class="filters">
@@ -89,6 +118,11 @@
 
           <div class="board">
             <div class="list-panel">
+              <div class="pager">
+                <button id="prev-page-button" type="button" class="button button-secondary">Previous</button>
+                <button id="next-page-button" type="button" class="button button-secondary">Next</button>
+                <button id="see-more-button" type="button" class="button button-secondary">See more</button>
+              </div>
               <div id="opportunities-list" class="opportunities-list"></div>
             </div>
             <aside class="detail-panel">

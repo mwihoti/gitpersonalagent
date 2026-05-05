@@ -6,7 +6,9 @@ const config = require('./config');
 
 let base = null;
 let tableSchemaPromise = null;
-const LOCAL_DATA_DIR = path.join(__dirname, '..', 'data');
+const LOCAL_DATA_DIR = process.env.VERCEL
+  ? path.join('/tmp', 'danagent-data')
+  : path.join(__dirname, '..', 'data');
 const LOCAL_DATA_FILE = path.join(LOCAL_DATA_DIR, 'opportunities.json');
 
 function isAirtableConfigured() {

@@ -155,6 +155,47 @@ textarea {
   gap: 24px;
 }
 
+.repo-form,
+.pager,
+.repo-results-header {
+  display: flex;
+  gap: 14px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.repo-input {
+  flex: 1 1 340px;
+}
+
+.repo-results {
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.repo-issues-list {
+  display: grid;
+  gap: 10px;
+}
+
+.repo-issue-card {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 16px;
+}
+
+.repo-issue-card h4,
+.repo-issue-card p {
+  margin: 0;
+}
+
+.repo-issue-card p {
+  color: var(--muted);
+  margin-top: 8px;
+}
+
 .panel {
   border-radius: var(--radius);
   padding: 24px;
@@ -244,6 +285,16 @@ textarea {
 .opportunities-list {
   display: grid;
   gap: 12px;
+}
+
+.pager {
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
+.pagination-summary {
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 .history-divider {
