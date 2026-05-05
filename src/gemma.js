@@ -245,11 +245,28 @@ async function analyzeWithOllama(userMessage) {
 }
 
 function parseJSON(raw) {
-  const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
+  // Strip markdown code fences only at the very start/end of the response.
+  // Do NOT use the multiline flag — with /m, ^ and $ match every line, which
+  // would incorrectly strip triple-backtick fences that appear inside JSON
+  // string values (e.g. code_skeleton fields containing ```clarity blocks).
+  const stripped = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+
   try {
-    return JSON.parse(cleaned);
-  } catch (e) {
-    console.error('Model returned non-JSON:', cleaned.slice(0, 400));
+    return JSON.parse(stripped);
+  } catch (_) {
+    // Fallback: extract the outermost {...} block in case the model prepended
+    // or appended prose around the JSON object.
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      try {
+        return JSON.parse(raw.slice(start, end + 1));
+      } catch (_2) { /* fall through to error */ }
+    }
+    console.error('Model returned non-JSON:', stripped.slice(0, 400));
     throw new Error('Failed to parse model JSON response');
   }
 }
