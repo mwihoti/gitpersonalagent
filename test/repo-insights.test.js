@@ -63,4 +63,7 @@ test('buildIssueFitScore prefers scoped, active, contributor-friendly issues', (
 
   assert.ok(strong.issueFitScore > weak.issueFitScore);
   assert.match(strong.issueFitLabel, /High fit|Medium fit/);
+  assert.equal(strong.issueRecommendation, 'Recommended first PR');
+  assert.match(strong.issueComplexity, /Quick win|Medium/);
+  assert.equal(weak.issueRecommendation, 'Avoid for first pass');
 });

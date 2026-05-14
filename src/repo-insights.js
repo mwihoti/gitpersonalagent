@@ -260,10 +260,20 @@ function buildIssueFitScore(issue, comments = []) {
   if (normalizedScore >= 75) band = 'High fit';
   else if (normalizedScore >= 55) band = 'Medium fit';
 
+  let complexity = 'Complex';
+  if (normalizedScore >= 68) complexity = 'Quick win';
+  else if (normalizedScore >= 50) complexity = 'Medium';
+
+  let recommendation = 'Avoid for first pass';
+  if (normalizedScore >= 60) recommendation = 'Recommended first PR';
+  else if (normalizedScore >= 50) recommendation = 'Worth considering';
+
   return {
     issueFitScore: normalizedScore,
     issueFitLabel: band,
     issueFitReason: truncate(reasons.slice(0, 3).join('. '), 260),
+    issueComplexity: complexity,
+    issueRecommendation: recommendation,
   };
 }
 

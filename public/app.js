@@ -88,7 +88,7 @@ function normalizeText(value) {
 
 function getVisibleOpportunities() {
   if (!state.repositories.length) {
-    return state.opportunities;
+    return [];
   }
 
   const watchedRepos = new Set(state.repositories.map(item => normalizeText(item.repo)));
@@ -161,7 +161,9 @@ function renderList() {
     els.prevPageButton.disabled = true;
     els.nextPageButton.disabled = true;
     els.seeMoreButton.disabled = true;
-    els.list.innerHTML = '<div class="detail-empty">No opportunities match the current filters.</div>';
+    els.list.innerHTML = state.repositories.length
+      ? '<div class="detail-empty">No opportunities match the current filters.</div>'
+      : '<div class="detail-empty">Add a repository to the watchlist and run a scan to populate the workbench.</div>';
     showEmptyState();
     return;
   }
@@ -366,7 +368,7 @@ function renderRepoIssues(repo) {
     `
     : '';
 
-  els.repoIssuesList.innerHTML = repo.issues.slice(0, 20).map(issue => `
+  const renderIssueCard = issue => `
     <article class="repo-issue-card">
       <div class="list-item-header">
         <h4>${escapeHtml(issue.title)}</h4>
@@ -378,6 +380,7 @@ function renderRepoIssues(repo) {
         ${createTag(issue.updatedAt ? issue.updatedAt.slice(0, 10) : 'Open')}
         ${createTag(`${issue.issueFitScore || 0}/100`, `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
         ${createTag(issue.issueFitLabel || 'Low fit', `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
+        ${createTag(issue.issueComplexity || 'Medium', `complexity-${statusClass(issue.issueComplexity || 'medium')}`)}
         ${(issue.labels || []).slice(0, 4).map(label => createTag(escapeHtml(label))).join('')}
       </div>
       <section class="repo-insight-block">
@@ -415,9 +418,36 @@ function renderRepoIssues(repo) {
         ` : '<p>No comments yet. The issue body is still the main source of context.</p>'}
       </section>
     </article>
-  `).join('');
+  `;
 
-  els.repoIssuesList.innerHTML = projectSummary + els.repoIssuesList.innerHTML;
+  const recommended = repo.issues.filter(issue => issue.issueRecommendation === 'Recommended first PR');
+  const consider = repo.issues.filter(issue => issue.issueRecommendation === 'Worth considering');
+  const avoid = repo.issues.filter(issue => issue.issueRecommendation === 'Avoid for first pass');
+
+  const renderSection = (title, subtitle, issues) => issues.length ? `
+    <section class="repo-section">
+      <div class="repo-section-heading">
+        <div>
+          <p class="eyebrow">${escapeHtml(subtitle)}</p>
+          <h4>${escapeHtml(title)}</h4>
+        </div>
+      </div>
+      <div class="repo-issues-list">
+        ${issues.map(renderIssueCard).join('')}
+      </div>
+    </section>
+  ` : '';
+
+  els.repoIssuesList.innerHTML = [
+    projectSummary,
+    renderSection('Recommended first PRs', 'Best first pass', recommended),
+    renderSection('Worth considering next', 'Medium scope', consider),
+    renderSection('Avoid for first pass', 'Later work', avoid),
+  ].join('');
+
+  if (!recommended.length && !consider.length && !avoid.length) {
+    els.repoIssuesList.innerHTML = projectSummary;
+  }
 }
 
 async function checkRepoIssues(event) {

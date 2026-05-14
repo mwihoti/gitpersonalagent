@@ -211,6 +211,16 @@ textarea {
   gap: 12px;
 }
 
+.repo-section {
+  display: grid;
+  gap: 12px;
+}
+
+.repo-section-heading h4 {
+  margin: 0;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
 .repo-issues-list {
   display: grid;
   gap: 10px;
@@ -473,6 +483,21 @@ textarea {
 }
 
 .tag.fit-low-fit {
+  background: rgba(21, 36, 29, 0.08);
+  color: var(--muted);
+}
+
+.tag.complexity-quick-win {
+  background: rgba(29, 122, 83, 0.14);
+  color: var(--success);
+}
+
+.tag.complexity-medium {
+  background: rgba(201, 93, 46, 0.12);
+  color: var(--accent-dark);
+}
+
+.tag.complexity-complex {
   background: rgba(21, 36, 29, 0.08);
   color: var(--muted);
 }
