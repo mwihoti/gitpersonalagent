@@ -5,6 +5,7 @@ const state = {
   storage: 'loading',
   currentPage: 1,
   pageSize: 20,
+  apiKey: window.sessionStorage.getItem('danagent.apiKey') || '',
 };
 
 const els = {
@@ -216,11 +217,54 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function rememberApiKey(apiKey) {
+  state.apiKey = apiKey;
+  if (apiKey) {
+    window.sessionStorage.setItem('danagent.apiKey', apiKey);
+    return;
+  }
+  window.sessionStorage.removeItem('danagent.apiKey');
+}
+
+async function readErrorResponse(res) {
+  try {
+    const payload = await res.clone().json();
+    return payload.error || `Request failed with status ${res.status}`;
+  } catch {
+    return `Request failed with status ${res.status}`;
+  }
+}
+
+async function authorizedFetch(url, options = {}, retry = true) {
+  const headers = new Headers(options.headers || {});
+  if (state.apiKey) {
+    headers.set('X-API-Key', state.apiKey);
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  });
+
+  if (response.status !== 401 || !retry) {
+    return response;
+  }
+
+  const nextApiKey = window.prompt('Enter the dashboard API key.', state.apiKey || '');
+  if (!nextApiKey) {
+    rememberApiKey('');
+    return response;
+  }
+
+  rememberApiKey(nextApiKey.trim());
+  return authorizedFetch(url, options, false);
+}
+
 async function loadOpportunities() {
   els.scanStatus.textContent = 'Loading opportunities';
-  const res = await fetch('/api/opportunities');
+  const res = await authorizedFetch('/api/opportunities');
   if (!res.ok) {
-    throw new Error('Failed to load opportunities');
+    throw new Error(await readErrorResponse(res));
   }
   const payload = await res.json();
   state.opportunities = payload.opportunities || [];
@@ -272,7 +316,7 @@ async function checkRepoIssues(event) {
   }
 
   els.repoStatus.textContent = 'Checking repository issues';
-  const res = await fetch('/api/repo-issues', {
+  const res = await authorizedFetch('/api/repo-issues', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repo }),
@@ -304,7 +348,7 @@ async function saveCurrentOpportunity(event) {
     quickPlan: els.detailQuickPlan.value.trim(),
   };
 
-  const res = await fetch(`/api/opportunities/${encodeURIComponent(item.id)}`, {
+  const res = await authorizedFetch(`/api/opportunities/${encodeURIComponent(item.id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -327,7 +371,7 @@ async function triggerScan() {
   els.runScanButton.disabled = true;
   els.scanStatus.textContent = 'Running scan';
   try {
-    const res = await fetch('/api/scan', { method: 'POST' });
+    const res = await authorizedFetch('/api/scan', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || 'Scan failed');

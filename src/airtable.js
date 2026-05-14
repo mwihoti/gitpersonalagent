@@ -6,9 +6,10 @@ const config = require('./config');
 
 let base = null;
 let tableSchemaPromise = null;
-const LOCAL_DATA_DIR = process.env.VERCEL
+let localWriteQueue = Promise.resolve();
+const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
   ? path.join('/tmp', 'danagent-data')
-  : path.join(__dirname, '..', 'data');
+  : path.join(__dirname, '..', 'data'));
 const LOCAL_DATA_FILE = path.join(LOCAL_DATA_DIR, 'opportunities.json');
 
 function isAirtableConfigured() {
@@ -155,13 +156,23 @@ async function writeLocalRecords(records) {
   await fs.writeFile(LOCAL_DATA_FILE, `${JSON.stringify(records, null, 2)}\n`, 'utf8');
 }
 
+function serializeLocalWrite(task) {
+  const next = localWriteQueue.then(task, task);
+  localWriteQueue = next.catch(() => {});
+  return next;
+}
+
 async function prependLocalRecords(records) {
-  const existing = await readLocalRecords();
-  await writeLocalRecords(deduplicateRecords([...records, ...existing]));
+  await serializeLocalWrite(async () => {
+    const existing = await readLocalRecords();
+    await writeLocalRecords(deduplicateRecords([...records, ...existing]));
+  });
 }
 
 async function syncLocalRecords(records) {
-  await writeLocalRecords(deduplicateRecords(records));
+  await serializeLocalWrite(async () => {
+    await writeLocalRecords(deduplicateRecords(records));
+  });
 }
 
 function recordKey(record) {
@@ -276,15 +287,17 @@ async function updateOpportunity(id, updates) {
   const fields = toFields(updates);
   const isLocalRecord = String(id).startsWith('local-');
   if (isLocalRecord) {
-    const rows = await readLocalRecords();
-    const idx = rows.findIndex(row => row.id === id);
-    if (idx === -1) {
-      throw new Error(`Opportunity not found: ${id}`);
-    }
+    return serializeLocalWrite(async () => {
+      const rows = await readLocalRecords();
+      const idx = rows.findIndex(row => row.id === id);
+      if (idx === -1) {
+        throw new Error(`Opportunity not found: ${id}`);
+      }
 
-    rows[idx] = { ...rows[idx], ...fields };
-    await writeLocalRecords(rows);
-    return normalizeRecord(rows[idx].id, rows[idx]);
+      rows[idx] = { ...rows[idx], ...fields };
+      await writeLocalRecords(rows);
+      return normalizeRecord(rows[idx].id, rows[idx]);
+    });
   }
 
   if (isAirtableConfigured()) {
@@ -299,15 +312,17 @@ async function updateOpportunity(id, updates) {
     }
   }
 
-  const rows = await readLocalRecords();
-  const idx = rows.findIndex(row => row.id === id);
-  if (idx === -1) {
-    throw new Error(`Opportunity not found: ${id}`);
-  }
+  return serializeLocalWrite(async () => {
+    const rows = await readLocalRecords();
+    const idx = rows.findIndex(row => row.id === id);
+    if (idx === -1) {
+      throw new Error(`Opportunity not found: ${id}`);
+    }
 
-  rows[idx] = { ...rows[idx], ...fields };
-  await writeLocalRecords(rows);
-  return normalizeRecord(rows[idx].id, rows[idx]);
+    rows[idx] = { ...rows[idx], ...fields };
+    await writeLocalRecords(rows);
+    return normalizeRecord(rows[idx].id, rows[idx]);
+  });
 }
 
 function derivePriority(item) {

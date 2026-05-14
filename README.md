@@ -145,9 +145,14 @@ WHATSAPP_APIKEY=...
 # Cron schedule (default: 8am Nairobi daily)
 SCAN_SCHEDULE=0 8 * * *
 
+# Protect dashboard APIs and manual scans
+DAN_AGENT_API_KEY=replace_with_a_long_random_string
+
 # Repos to scan (comma-separated)
 GITHUB_REPOS=stacks-network/stacks-core,stacks-network/rendezvous,stx-labs/connect,stx-labs/clarinet,stx-labs/token-metadata-api
 ```
+
+If `DAN_AGENT_API_KEY` is set, the dashboard prompts for it once and sends it on all API requests. Manual scans and all dashboard data endpoints reject unauthenticated requests.
 
 ---
 

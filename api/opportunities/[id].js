@@ -1,9 +1,11 @@
 'use strict';
 const { updateOpportunity } = require('../../src/airtable');
+const { requireApiAuth } = require('../../src/auth');
 const { allowOptions, readJsonBody, sendJson } = require('../../src/http');
 
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;
+  if (!requireApiAuth(req, res)) return;
 
   if (req.method !== 'PUT' && req.method !== 'POST') {
     return sendJson(res, 405, { error: 'Method not allowed' });

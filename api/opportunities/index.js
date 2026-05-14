@@ -1,9 +1,11 @@
 'use strict';
 const { listOpportunities, isAirtableConfigured } = require('../../src/airtable');
+const { requireApiAuth } = require('../../src/auth');
 const { allowOptions, sendJson } = require('../../src/http');
 
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;
+  if (!requireApiAuth(req, res)) return;
 
   if (req.method !== 'GET') {
     return sendJson(res, 405, { error: 'Method not allowed' });

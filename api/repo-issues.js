@@ -1,5 +1,6 @@
 'use strict';
 const { scanRepo } = require('../src/github');
+const { requireApiAuth } = require('../src/auth');
 const { allowOptions, readJsonBody, sendJson } = require('../src/http');
 
 function parseRepo(input) {
@@ -14,6 +15,7 @@ function parseRepo(input) {
 
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;
+  if (!requireApiAuth(req, res)) return;
 
   if (req.method !== 'POST') {
     return sendJson(res, 405, { error: 'Method not allowed' });

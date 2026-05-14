@@ -1,5 +1,6 @@
 'use strict';
 const { runScan } = require('../src/run-scan');
+const { requireApiAuth } = require('../src/auth');
 const { allowOptions, sendJson } = require('../src/http');
 
 module.exports = async function handler(req, res) {
@@ -25,6 +26,10 @@ module.exports = async function handler(req, res) {
 
   if (!allowManual && !isAuthorizedCron) {
     return sendJson(res, 401, { error: 'Unauthorized' });
+  }
+
+  if (allowManual && !requireApiAuth(req, res)) {
+    return;
   }
 
   try {

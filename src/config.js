@@ -33,5 +33,8 @@ module.exports = {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     chatId: process.env.TELEGRAM_CHAT_ID || '',
   },
+  dashboard: {
+    apiKey: process.env.DAN_AGENT_API_KEY || '',
+  },
   schedule: process.env.SCAN_SCHEDULE || '0 8 * * *',
 };
