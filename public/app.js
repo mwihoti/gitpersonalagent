@@ -86,11 +86,21 @@ function normalizeText(value) {
   return String(value || '').toLowerCase();
 }
 
+function getVisibleOpportunities() {
+  if (!state.repositories.length) {
+    return state.opportunities;
+  }
+
+  const watchedRepos = new Set(state.repositories.map(item => normalizeText(item.repo)));
+  return state.opportunities.filter(item => watchedRepos.has(normalizeText(item.repo)));
+}
+
 function renderStats() {
-  const total = state.opportunities.length;
-  const inProgress = state.opportunities.filter(item => item.status === 'In Progress').length;
-  const done = state.opportunities.filter(item => item.status === 'Done').length;
-  const high = state.opportunities.filter(item => item.priority === 'High').length;
+  const visible = getVisibleOpportunities();
+  const total = visible.length;
+  const inProgress = visible.filter(item => item.status === 'In Progress').length;
+  const done = visible.filter(item => item.status === 'Done').length;
+  const high = visible.filter(item => item.priority === 'High').length;
 
   els.metricTotal.textContent = String(total);
   els.metricProgress.textContent = String(inProgress);
@@ -104,7 +114,7 @@ function applyFilters() {
   const priority = els.priorityFilter.value;
   const search = normalizeText(els.searchInput.value);
 
-  state.filtered = state.opportunities.filter(item => {
+  state.filtered = getVisibleOpportunities().filter(item => {
     const matchesStatus = !status || item.status === status;
     const matchesPriority = !priority || item.priority === priority;
     const haystack = [
@@ -206,7 +216,8 @@ function selectOpportunity(id) {
   state.selectedId = id;
   renderList();
 
-  const item = state.opportunities.find(entry => entry.id === id);
+  const item = state.filtered.find(entry => entry.id === id)
+    || getVisibleOpportunities().find(entry => entry.id === id);
   if (!item) {
     showEmptyState();
     return;
@@ -319,6 +330,8 @@ async function loadRepositories() {
   const payload = await res.json();
   state.repositories = payload.repositories || [];
   renderRepositories();
+  renderStats();
+  applyFilters();
 }
 
 function renderRepoIssues(repo) {

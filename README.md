@@ -9,7 +9,7 @@ An AI-powered operations dashboard that scans GitHub repositories for high-signa
 Every morning at 8am Nairobi time the agent:
 
 1. **Scans GitHub** — pulls open issues from the repositories in your dashboard watchlist, prioritising `good first issue`, `help wanted`, and `bug` labels
-2. **Fetches tech news** — TechCrunch, Wired, Ars Technica, TLDR Tech, Stacks Blog, GitHub Releases, Hacker News
+2. **Fetches tech news** — TechCrunch, Wired, Ars Technica, TLDR Tech, GitHub Blog, GitHub Releases, Hacker News
 3. **Analyses with Gemma 4** — identifies the best implementation opportunities and generates real code skeletons
 4. **Saves to Airtable** — structured database of opportunities with effort level, suggested action, and starter code
 5. **Notifies via Telegram** — sends a digest with top opportunities and a short plan
@@ -184,7 +184,7 @@ Manage repositories from the dashboard:
 | Wired | RSS | In-depth investigative tech |
 | Ars Technica | RSS | Science, policy, deep tech |
 | TLDR Tech | RSS | Daily 5-minute developer digest |
-| Stacks Blog | RSS | Stacks ecosystem updates |
+| GitHub Blog | RSS | Platform and open-source ecosystem updates |
 | GitHub Releases | API | Latest releases from monitored repos |
 | Hacker News | API | Community-voted tech stories |
 
@@ -257,7 +257,7 @@ pm2 save && pm2 startup
 Create `.github/workflows/scan.yml`:
 
 ```yaml
-name: Daily Stacks Scan
+name: Daily Repository Scan
 on:
   schedule:
     - cron: '0 5 * * *'   # 8am Nairobi = 5am UTC
@@ -290,25 +290,14 @@ Add all secrets in your GitHub repo → Settings → Secrets and variables → A
 
 ---
 
-## Contest Strategy
+## Operating Model
 
-The contest allows up to **20 qualifying PRs per month** — each is one entry in a random draw.
-
-**Recommended monthly workflow:**
-1. Run `npm run scan` every Monday morning
-2. Check Airtable for the week's opportunities
-3. Start with `low` effort items (1–2 hours each)
-4. Submit 1–2 PRs per week = 4–8 entries per month
-5. Always run `clarinet check` before opening a Clarity PR
-
-**What qualifies:**
-- New UI element or page
-- Bug fix
-- New Clarity contract or function
-- Contract optimization
-- Security enhancement
-- Adding a test suite
-- Meaningful refactor
+**Recommended weekly workflow:**
+1. Keep the watchlist current in the dashboard
+2. Run `npm run scan` on a schedule or before planning sessions
+3. Review the highest-fit issues first
+4. Assign owners and next steps in the workbench
+5. Use repo-specific validation commands before opening PRs
 
 ---
 

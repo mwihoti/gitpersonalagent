@@ -28,7 +28,7 @@ module.exports = async function handler(req, res) {
       return sendJson(res, 400, { error: 'Enter a valid GitHub repo URL or owner/repo value.' });
     }
 
-    const result = await scanRepo(repo);
+    const result = await scanRepo(repo, { mode: 'all-open' });
     return sendJson(res, 200, { repo: result });
   } catch (error) {
     return sendJson(res, 500, { error: error.message });

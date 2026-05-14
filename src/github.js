@@ -38,6 +38,26 @@ async function fetchRecentIssues(repo) {
   return data.filter(i => !i.pull_request);
 }
 
+async function fetchOpenIssues(repo, perPage = 30) {
+  const params = new URLSearchParams({
+    state: 'open',
+    sort: 'updated',
+    direction: 'desc',
+    per_page: String(perPage),
+  });
+
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/issues?${params}`,
+    { headers: makeHeaders() }
+  );
+  if (!res.ok) {
+    console.warn(`  GitHub ${repo} (open): ${res.status}`);
+    return [];
+  }
+  const data = await res.json();
+  return data.filter(i => !i.pull_request);
+}
+
 // Good first issues — any age, always worth surfacing
 async function fetchGoodFirstIssues(repo) {
   const params = new URLSearchParams({
@@ -163,16 +183,25 @@ async function scanRepos(repos = []) {
   return results;
 }
 
-async function scanRepo(repo) {
-  const [repoDetails, recent, goodFirst, bugs, recentPRs] = await Promise.all([
+async function scanRepo(repo, options = {}) {
+  const {
+    mode = 'prioritized',
+  } = options;
+
+  const [repoDetails, recent, goodFirst, bugs, recentPRs, openIssues] = await Promise.all([
     fetchRepoDetails(repo),
     fetchRecentIssues(repo),
     fetchGoodFirstIssues(repo),
     fetchBugIssues(repo),
     fetchRecentPRActivity(repo),
+    mode === 'all-open' ? fetchOpenIssues(repo, 50) : Promise.resolve([]),
   ]);
 
-  const merged = dedup([...goodFirst, ...bugs, ...recent]).slice(0, 20);
+  const sourceIssues = mode === 'all-open'
+    ? openIssues
+    : dedup([...goodFirst, ...bugs, ...recent]).slice(0, 20);
+
+  const merged = dedup(sourceIssues).slice(0, 20);
   const issues = await Promise.all(merged.map(async issue => {
     const comments = await fetchIssueComments(issue);
     return {
@@ -193,7 +222,7 @@ async function scanRepo(repo) {
     repo,
     repoUrl: `https://github.com/${repo}`,
     overview: buildRepoOverview(repoDetails),
-    totalOpenIssues: recent.length,
+    totalOpenIssues: mode === 'all-open' ? openIssues.length : recent.length,
     issues,
     recentPRs,
     labelSummary: labelSummary || 'recent activity',

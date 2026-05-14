@@ -1,5 +1,6 @@
 'use strict';
 const config = require('./config');
+const { getScanRepositories } = require('./repositories');
 
 // ─── RSS parser (handles both RSS 2.0 and Atom) ───────────────────────────────
 
@@ -51,7 +52,7 @@ function normalizeDate(raw) {
 // ─── Relevance filter ─────────────────────────────────────────────────────────
 
 const RELEVANT_KEYWORDS = [
-  'bitcoin', 'stacks', 'clarity', 'blockchain', 'crypto', 'defi', 'web3', 'smart contract',
+  'bitcoin', 'blockchain', 'crypto', 'defi', 'web3', 'smart contract',
   'ai', 'llm', 'agent', 'openai', 'anthropic', 'gemini', 'model', 'developer', 'api',
   'rust', 'typescript', 'javascript', 'open source', 'github', 'startup', 'funding',
   'layer 2', 'layer2', 'ethereum', 'solana', 'nft', 'token', 'wallet',
@@ -85,7 +86,7 @@ async function fetchRSS(name, url, maxItems = 5) {
 // ─── Hacker News (Algolia API — already working) ──────────────────────────────
 
 async function fetchHackerNews() {
-  const queries = ['stacks blockchain', 'clarity smart contract', 'bitcoin layer'];
+  const queries = ['open source engineering', 'github developer tools', 'bitcoin layer'];
   const results = [];
   for (const q of queries) {
     try {
@@ -119,7 +120,8 @@ async function fetchGitHubReleases() {
   const headers = { Accept: 'application/vnd.github+json' };
   if (config.github.token) headers.Authorization = `Bearer ${config.github.token}`;
   const results = [];
-  for (const repo of config.github.repos) {
+  const repos = await getScanRepositories();
+  for (const repo of repos) {
     try {
       const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=2`, { headers, signal: AbortSignal.timeout(10_000) });
       if (!res.ok) continue;
@@ -157,9 +159,9 @@ async function fetchNews() {
     fetchRSS('The Batch',     'https://www.deeplearning.ai/the-batch/feed/', 3),
     fetchRSS('Morning Brew',  'https://api.morningbrew.com/v2/rss/feed?pub=tech', 3),
 
-    // Crypto / Stacks specific
-    fetchRSS('Hiro Blog',     'https://www.hiro.so/feed.xml', 3),
-    fetchRSS('Stacks Blog',   'https://blog.stacks.co/rss.xml', 3),
+    // Engineering / platform focused
+    fetchRSS('GitHub Blog',   'https://github.blog/feed/', 3),
+    fetchRSS('Vercel Blog',   'https://vercel.com/blog/rss.xml', 3),
   ]);
 
   const allRss = rssFeeds.flat();
