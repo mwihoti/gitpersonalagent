@@ -199,6 +199,12 @@ textarea {
   gap: 12px;
 }
 
+.watchlist-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .watchlist-item p {
   margin: 6px 0 0;
   color: var(--muted);

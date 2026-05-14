@@ -69,9 +69,20 @@ function renderRepositories() {
         <strong>${escapeHtml(item.repo)}</strong>
         <p>${escapeHtml(item.addedAt ? `Added ${new Date(item.addedAt).toLocaleString()}` : 'Ready for scheduled scans')}</p>
       </div>
-      <button type="button" class="button button-secondary watchlist-remove" data-id="${escapeHtml(item.id)}">Remove</button>
+      <div class="watchlist-actions">
+        <button type="button" class="button button-secondary watchlist-inspect" data-repo="${escapeHtml(item.repo)}">Inspect</button>
+        <button type="button" class="button button-secondary watchlist-remove" data-id="${escapeHtml(item.id)}">Remove</button>
+      </div>
     </article>
   `).join('');
+
+  els.watchlistList.querySelectorAll('.watchlist-inspect').forEach(node => {
+    node.addEventListener('click', () => {
+      inspectRepository(node.dataset.repo).catch(error => {
+        els.repoStatus.textContent = error.message;
+      });
+    });
+  });
 
   els.watchlistList.querySelectorAll('.watchlist-remove').forEach(node => {
     node.addEventListener('click', () => {
@@ -451,7 +462,7 @@ function renderRepoIssues(repo) {
 }
 
 async function checkRepoIssues(event) {
-  event.preventDefault();
+  if (event) event.preventDefault();
   const repo = els.repoInput.value.trim();
   if (!repo) {
     els.repoStatus.textContent = 'Enter a GitHub repo URL or owner/repo.';
@@ -471,6 +482,11 @@ async function checkRepoIssues(event) {
 
   renderRepoIssues(data.repo);
   els.repoStatus.textContent = `Loaded ${data.repo.issues.length} issues for ${data.repo.repo}`;
+}
+
+async function inspectRepository(repo) {
+  els.repoInput.value = repo;
+  await checkRepoIssues();
 }
 
 async function addRepositoryToWatchlist(event) {
@@ -495,6 +511,7 @@ async function addRepositoryToWatchlist(event) {
   els.watchlistInput.value = '';
   els.watchlistStatus.textContent = `${data.repository.repo} added to the scheduled watchlist`;
   await loadRepositories();
+  await inspectRepository(data.repository.repo);
 }
 
 async function removeRepository(id) {
