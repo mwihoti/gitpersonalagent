@@ -75,20 +75,19 @@ function buildDigestMessage(digest) {
     ? digest.tech_news_summary.slice(0, 3).map(n => `• ${n}`).join('\n')
     : digest.tech_news_summary || '';
 
-  return `*Stacks Dev Assistant* 🔥 ${digest.date}
+  return `*Repository Intelligence Digest* ${digest.date}
 
-Found *${count} PR opportunities*:
+Found *${count} implementation opportunities*:
 
 ${items}
 
 📌 *Plan:* ${digest.quick_plan}
 
-📰 *This week in Stacks:*
+📰 *Signal summary:*
 ${news}
 
-Open Airtable for code skeletons + full details!`;
+Open the dashboard for code skeletons, issue context, and team notes.`;
 }
-
 // ─── Telegram command listener (long-polling) ────────────────────────────────
 // Calls getUpdates in a loop. When it sees /scan from the authorized chatId,
 // calls onScan(). Safe to run alongside the cron scheduler.

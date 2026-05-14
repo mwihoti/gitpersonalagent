@@ -3,6 +3,7 @@ const { scanRepos } = require('./github');
 const { analyzeWithGemma } = require('./gemma');
 const { fetchNews } = require('./news');
 const { saveDigest } = require('./airtable');
+const { getScanRepositories } = require('./repositories');
 const { sendNotification, buildDigestMessage } = require('./whatsapp');
 
 async function runScan(options = {}) {
@@ -13,11 +14,16 @@ async function runScan(options = {}) {
   } = options;
 
   const startedAt = new Date().toISOString();
-  logger.log(`\n[${startedAt}] Starting Stacks Dev Assistant scan...`);
+  logger.log(`\n[${startedAt}] Starting repository intelligence scan...`);
+
+  const repos = await getScanRepositories();
+  if (!repos.length) {
+    throw new Error('No repositories configured. Add at least one GitHub repo from the dashboard watchlist.');
+  }
 
   logger.log('\n1/3 Scanning GitHub repos + news...');
   const [repoData, news] = await Promise.all([
-    scanRepos(),
+    scanRepos(repos),
     fetchNews(),
   ]);
   const totalIssues = repoData.reduce((n, r) => n + r.issues.length, 0);

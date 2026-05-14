@@ -10,8 +10,6 @@ function required(key) {
 module.exports = {
   github: {
     token: process.env.GITHUB_TOKEN || '',
-    repos: (process.env.GITHUB_REPOS || 'stacks-network/stacks-core,stacks-network/rendezvous,stx-labs/connect,stx-labs/clarinet,stx-labs/token-metadata-api')
-      .split(',').map(r => r.trim()).filter(Boolean),
   },
   groq: {
     apiKey: process.env.GROQ_API_KEY || '',

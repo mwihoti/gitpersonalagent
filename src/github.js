@@ -1,5 +1,6 @@
 'use strict';
 const config = require('./config');
+const { buildIssueInsight, buildRepoOverview } = require('./repo-insights');
 
 const DAYS_BACK = 30; // general recent activity window
 
@@ -97,6 +98,37 @@ async function fetchRecentPRActivity(repo) {
   }));
 }
 
+async function fetchRepoDetails(repo) {
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}`,
+    { headers: makeHeaders() }
+  );
+
+  if (!res.ok) {
+    throw new Error(`GitHub repo lookup failed for ${repo}: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+async function fetchIssueComments(issue) {
+  if (!issue.comments) return [];
+
+  const params = new URLSearchParams({
+    per_page: '5',
+    sort: 'updated',
+    direction: 'desc',
+  });
+
+  const res = await fetch(
+    `${issue.comments_url}?${params}`,
+    { headers: makeHeaders() }
+  );
+
+  if (!res.ok) return [];
+  return res.json();
+}
+
 function dedup(issues) {
   const seen = new Set();
   return issues.filter(i => {
@@ -118,10 +150,10 @@ function shape(issue) {
   };
 }
 
-async function scanRepos() {
+async function scanRepos(repos = []) {
   const results = [];
 
-  for (const repo of config.github.repos) {
+  for (const repo of repos) {
     console.log(`  Scanning ${repo}...`);
     const result = await scanRepo(repo);
     console.log(`    → ${result.issues.length} issues (${result.labelSummary})`);
@@ -132,15 +164,26 @@ async function scanRepos() {
 }
 
 async function scanRepo(repo) {
-  const [recent, goodFirst, bugs, recentPRs] = await Promise.all([
+  const [repoDetails, recent, goodFirst, bugs, recentPRs] = await Promise.all([
+    fetchRepoDetails(repo),
     fetchRecentIssues(repo),
     fetchGoodFirstIssues(repo),
     fetchBugIssues(repo),
     fetchRecentPRActivity(repo),
   ]);
 
-  const merged = dedup([...goodFirst, ...bugs, ...recent]);
-  const issues = merged.map(shape);
+  const merged = dedup([...goodFirst, ...bugs, ...recent]).slice(0, 20);
+  const issues = await Promise.all(merged.map(async issue => {
+    const comments = await fetchIssueComments(issue);
+    return {
+      ...shape(issue),
+      ...buildIssueInsight(issue, comments),
+    };
+  })).then(items => items.sort((a, b) => {
+    const scoreDiff = Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+  }));
   const labelSummary = [
     goodFirst.length ? `${goodFirst.length} good-first` : '',
     bugs.length ? `${bugs.length} bugs` : '',
@@ -149,6 +192,7 @@ async function scanRepo(repo) {
   return {
     repo,
     repoUrl: `https://github.com/${repo}`,
+    overview: buildRepoOverview(repoDetails),
     totalOpenIssues: recent.length,
     issues,
     recentPRs,

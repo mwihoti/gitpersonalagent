@@ -164,8 +164,45 @@ textarea {
   flex-wrap: wrap;
 }
 
+.repo-admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.9fr);
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
 .repo-input {
   flex: 1 1 340px;
+}
+
+.watchlist-panel,
+.watchlist-item {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+}
+
+.watchlist-panel {
+  padding: 16px;
+}
+
+.watchlist-list {
+  display: grid;
+  gap: 10px;
+}
+
+.watchlist-item {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.watchlist-item p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .repo-results {
@@ -186,14 +223,75 @@ textarea {
   padding: 16px;
 }
 
+.repo-overview-card {
+  background: linear-gradient(180deg, rgba(255, 250, 241, 0.98) 0%, rgba(245, 237, 224, 0.98) 100%);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: 18px;
+}
+
+.repo-overview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
 .repo-issue-card h4,
-.repo-issue-card p {
+.repo-issue-card h5,
+.repo-issue-card p,
+.repo-overview-card h4,
+.repo-overview-card p {
   margin: 0;
 }
 
-.repo-issue-card p {
+.repo-issue-card p,
+.repo-overview-card p {
   color: var(--muted);
   margin-top: 8px;
+}
+
+.repo-issue-card h5 {
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.repo-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.repo-insight-block,
+.repo-comment {
+  background: rgba(21, 36, 29, 0.04);
+  border: 1px solid rgba(21, 36, 29, 0.08);
+  border-radius: 18px;
+  padding: 14px;
+}
+
+.repo-plan-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+}
+
+.repo-comment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.repo-comment strong,
+.repo-comment span {
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.repo-comment span {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .panel {
@@ -362,14 +460,21 @@ textarea {
 }
 
 .tag.priority-high,
-.tag.status-in-progress {
+.tag.status-in-progress,
+.tag.fit-high-fit {
   background: rgba(201, 93, 46, 0.12);
   color: var(--accent-dark);
 }
 
-.tag.status-done {
+.tag.status-done,
+.tag.fit-medium-fit {
   background: rgba(29, 122, 83, 0.12);
   color: var(--success);
+}
+
+.tag.fit-low-fit {
+  background: rgba(21, 36, 29, 0.08);
+  color: var(--muted);
 }
 
 .detail-panel {
@@ -467,7 +572,9 @@ pre {
   .filters,
   .board,
   .detail-grid,
-  .context-grid {
+  .context-grid,
+  .repo-admin-grid,
+  .repo-insight-grid {
     grid-template-columns: 1fr;
   }
 

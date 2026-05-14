@@ -7,6 +7,8 @@ const scanHandler = require('./api/scan');
 const healthHandler = require('./api/health');
 const opportunitiesHandler = require('./api/opportunities/index');
 const opportunityHandler = require('./api/opportunities/[id]');
+const repositoriesHandler = require('./api/repositories/index');
+const repositoryHandler = require('./api/repositories/[id]');
 const repoIssuesHandler = require('./api/repo-issues');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -55,11 +57,20 @@ async function routeApi(req, res, pathname, query) {
   if (pathname === '/api/repo-issues') {
     return repoIssuesHandler(req, res);
   }
+  if (pathname === '/api/repositories') {
+    return repositoriesHandler(req, res);
+  }
 
   const match = pathname.match(/^\/api\/opportunities\/(.+)$/);
   if (match) {
     req.query = { ...query, id: decodeURIComponent(match[1]) };
     return opportunityHandler(req, res);
+  }
+
+  const repoMatch = pathname.match(/^\/api\/repositories\/(.+)$/);
+  if (repoMatch) {
+    req.query = { ...query, id: decodeURIComponent(repoMatch[1]) };
+    return repositoryHandler(req, res);
   }
 
   res.statusCode = 404;

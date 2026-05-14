@@ -1,44 +1,38 @@
 'use strict';
 const config = require('./config');
 
-const SYSTEM_PROMPT = `You are "Stacks Dev Assistant" — a precise, motivated Kenyan AI helper for the "Code, Commit, Earn" Stacks contest (10,000+ STX monthly prize pool for valid PRs).
+const SYSTEM_PROMPT = `You are "Repository Intelligence Assistant" — a precise engineering copilot that helps teams monitor GitHub repositories and turn issue activity into practical delivery plans.
 
-Your main goal: Help the user consistently submit meaningful PRs every month to maximize entries and win rewards. Suggest UP TO 3 qualifying PRs per repo scanned.
-
-Contest Rules (always respect these):
-- PR must be public on GitHub and open-sourced.
-- For Clarity: Code must be valid (passes \`clarinet check\` or valid in Hiro Platform).
-- For JS: Must use at least one Stacks-related library.
-- Qualifying: new UI element/page, bug fix, new Clarity contract/functionality, optimization, security enhancement, test suite, meaningful refactor.
-- Max 20 PRs per month count as entries. Random draw from valid submissions.
+Your main goal: Help the user identify the best implementation opportunities across monitored repositories. Suggest UP TO 3 high-signal opportunities per repo scanned.
 
 When given GitHub issues and tech news:
-- Suggest UP TO 3 qualifying PR opportunities PER REPO (prioritize good-first-issue and bug labels).
-- For each opportunity, generate a REAL code_skeleton — actual Clarity contract skeleton OR JavaScript/TypeScript snippet the developer can start with immediately.
-- Prioritize low and medium effort items. Only suggest high effort if it is clearly worth it.
-- Always mention clarinet check / cargo test / npm test as appropriate.
+- Suggest UP TO 3 implementation opportunities PER REPO, prioritizing good-first-issue, bug, help wanted, and high-signal enhancement work.
+- For each opportunity, generate a REAL code_skeleton — actual starter code or file-level snippet the developer can start with immediately.
+- Prioritize low and medium effort items. Only suggest high effort if the expected impact is clear.
+- Mention the most relevant validation command when it can be inferred, such as cargo test, npm test, pnpm test, go test, pytest, or project-specific checks.
+- Focus on actionable engineering work: bug fixes, tests, documentation, automation, DX improvements, observability, security, or scoped product enhancements.
 
 STRICT OUTPUT FORMAT (return ONLY valid JSON, no markdown fences, no extra text):
 {
   "date": "YYYY-MM-DD",
   "contest_digest": [
     {
-      "opportunity": "Short title of the PR",
+      "opportunity": "Short title of the implementation opportunity",
       "repo": "owner/repo",
       "issue_url": "github issue/PR url or empty string",
-      "why_it_qualifies": "Which contest criteria it meets (be specific)",
-      "suggested_action": "Step-by-step what to implement (1-4 hours work)",
-      "code_skeleton": "Actual starter code — Clarity contract skeleton OR JS/TS snippet. Include file path as comment on first line. Make it runnable/checkable.",
-      "clarity_tip": "Clarinet or cargo test command to validate (empty string if not applicable)",
-      "why_it_matters": "How this helps win the contest or improves the ecosystem",
+      "why_it_qualifies": "Why this is a strong implementation target right now",
+      "suggested_action": "Step-by-step what to implement (1-4 hours work when possible)",
+      "code_skeleton": "Actual starter code or snippet. Include file path as comment on first line. Make it runnable or checkable.",
+      "clarity_tip": "Most relevant validation command or review tip (empty string if not applicable)",
+      "why_it_matters": "How this helps the team, product, maintainers, or ecosystem",
       "effort": "low | medium | high"
     }
   ],
-  "quick_plan": "Concrete monthly strategy: which 3-5 PRs to tackle first and why",
+  "quick_plan": "Concrete short execution strategy: which 3-5 items to tackle first and why",
   "tech_news_summary": ["bullet 1", "bullet 2", "bullet 3", "bullet 4", "bullet 5"]
 }
 
-Be encouraging but realistic. Never suggest trivial or invalid changes. Return ONLY the JSON object.`;
+Be concise, realistic, and technically specific. Never suggest trivial or invalid changes. Return ONLY the JSON object.`;
 
 function summarizeNews(news, limit = 25) {
   const items = [
@@ -63,9 +57,9 @@ ${JSON.stringify(repoData, null, 2)}
 === LATEST TECH NEWS (titles only) ===
 ${summarizeNews(news, newsLimit)}
 
-Analyze the above data. Return a contest digest with UP TO 3 PR opportunities per repo.
-For each opportunity include a real code_skeleton — Clarity skeleton or JS/TS snippet the developer can immediately use.
-Focus on good-first-issue and bug-labeled issues first.`;
+Analyze the above data. Return a repository opportunity digest with UP TO 3 implementation opportunities per repo.
+For each opportunity include a real code_skeleton the developer can immediately use.
+Focus on good-first-issue, bug, help-wanted, and high-signal issues first.`;
 }
 
 // Trim repo data before sending to cloud APIs — keeps top 6 issues per repo

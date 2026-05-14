@@ -1,6 +1,6 @@
-# Stacks Dev Assistant — Dan Agent
+# Repository Intelligence Dashboard
 
-An AI-powered agent that scans the Stacks ecosystem for contest-qualifying PR opportunities, generates starter code, and delivers a daily digest to your phone. Built for the **Code, Commit, Earn** contest (10,000+ STX monthly prize pool).
+An AI-powered operations dashboard that scans GitHub repositories for high-signal implementation opportunities, generates starter code, and delivers a daily digest to your team.
 
 ---
 
@@ -8,11 +8,11 @@ An AI-powered agent that scans the Stacks ecosystem for contest-qualifying PR op
 
 Every morning at 8am Nairobi time the agent:
 
-1. **Scans GitHub** — pulls open issues from 5 Stacks repos, prioritising `good first issue` and `bug` labels
+1. **Scans GitHub** — pulls open issues from the repositories in your dashboard watchlist, prioritising `good first issue`, `help wanted`, and `bug` labels
 2. **Fetches tech news** — TechCrunch, Wired, Ars Technica, TLDR Tech, Stacks Blog, GitHub Releases, Hacker News
-3. **Analyses with Gemma 4** — Google's latest model (via Ollama Cloud) identifies the best contest opportunities and generates real code skeletons
+3. **Analyses with Gemma 4** — identifies the best implementation opportunities and generates real code skeletons
 4. **Saves to Airtable** — structured database of opportunities with effort level, suggested action, and starter code
-5. **Notifies via Telegram** — sends a digest to @dan_sentinel_bot with top opportunities and weekly plan
+5. **Notifies via Telegram** — sends a digest with top opportunities and a short plan
 
 ---
 
@@ -104,7 +104,7 @@ ollama login
 npm run scan
 ```
 
-You should see the digest printed in terminal, a Telegram message from @dan_sentinel_bot, and new rows in Airtable.
+You should see the digest printed in terminal, a notification message, and new rows in Airtable.
 
 ### 6. Start the daily schedule
 
@@ -113,6 +113,8 @@ npm start
 ```
 
 Runs at 8am Nairobi time (Africa/Nairobi) every day.
+
+Before the scheduled scan becomes useful, add repositories from the dashboard watchlist. Scheduled scans now read from that persisted watchlist instead of `.env`.
 
 ---
 
@@ -148,8 +150,6 @@ SCAN_SCHEDULE=0 8 * * *
 # Protect dashboard APIs and manual scans
 DAN_AGENT_API_KEY=replace_with_a_long_random_string
 
-# Repos to scan (comma-separated)
-GITHUB_REPOS=stacks-network/stacks-core,stacks-network/rendezvous,stx-labs/connect,stx-labs/clarinet,stx-labs/token-metadata-api
 ```
 
 If `DAN_AGENT_API_KEY` is set, the dashboard prompts for it once and sends it on all API requests. Manual scans and all dashboard data endpoints reject unauthenticated requests.
@@ -166,17 +166,13 @@ If `DAN_AGENT_API_KEY` is set, the dashboard prompts for it once and sends it on
 
 ---
 
-## Repos Monitored
+## Repositories Monitored
 
-| Repo | Focus |
-|---|---|
-| `stacks-network/stacks-core` | Core blockchain node (Rust) |
-| `stacks-network/rendezvous` | Clarity contract fuzzer |
-| `stx-labs/connect` | Stacks wallet connection library (JS) |
-| `stx-labs/clarinet` | Clarity development toolchain (Rust) |
-| `stx-labs/token-metadata-api` | Token metadata service (TypeScript) |
+Manage repositories from the dashboard:
 
-Add more repos by editing `GITHUB_REPOS` in `.env`.
+1. Open the app
+2. Add `owner/repo` or a GitHub repo URL in the watchlist form
+3. Use `Run scan now` or let the daily schedule use the saved watchlist
 
 ---
 

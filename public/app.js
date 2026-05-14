@@ -1,6 +1,7 @@
 const state = {
   opportunities: [],
   filtered: [],
+  repositories: [],
   selectedId: null,
   storage: 'loading',
   currentPage: 1,
@@ -46,11 +47,40 @@ const els = {
   repoForm: document.getElementById('repo-form'),
   repoInput: document.getElementById('repo-input'),
   repoStatus: document.getElementById('repo-status'),
+  watchlistForm: document.getElementById('watchlist-form'),
+  watchlistInput: document.getElementById('watchlist-input'),
+  watchlistStatus: document.getElementById('watchlist-status'),
+  watchlistList: document.getElementById('watchlist-list'),
   repoResults: document.getElementById('repo-results'),
   repoResultsName: document.getElementById('repo-results-name'),
   repoResultsCount: document.getElementById('repo-results-count'),
   repoIssuesList: document.getElementById('repo-issues-list'),
 };
+
+function renderRepositories() {
+  if (!state.repositories.length) {
+    els.watchlistList.innerHTML = '<div class="detail-empty">No repositories added yet.</div>';
+    return;
+  }
+
+  els.watchlistList.innerHTML = state.repositories.map(item => `
+    <article class="watchlist-item">
+      <div>
+        <strong>${escapeHtml(item.repo)}</strong>
+        <p>${escapeHtml(item.addedAt ? `Added ${new Date(item.addedAt).toLocaleString()}` : 'Ready for scheduled scans')}</p>
+      </div>
+      <button type="button" class="button button-secondary watchlist-remove" data-id="${escapeHtml(item.id)}">Remove</button>
+    </article>
+  `).join('');
+
+  els.watchlistList.querySelectorAll('.watchlist-remove').forEach(node => {
+    node.addEventListener('click', () => {
+      removeRepository(node.dataset.id).catch(error => {
+        els.watchlistStatus.textContent = error.message;
+      });
+    });
+  });
+}
 
 function normalizeText(value) {
   return String(value || '').toLowerCase();
@@ -281,15 +311,47 @@ async function loadOpportunities() {
   els.scanStatus.textContent = 'Ready';
 }
 
+async function loadRepositories() {
+  const res = await authorizedFetch('/api/repositories');
+  if (!res.ok) {
+    throw new Error(await readErrorResponse(res));
+  }
+  const payload = await res.json();
+  state.repositories = payload.repositories || [];
+  renderRepositories();
+}
+
 function renderRepoIssues(repo) {
   els.repoResults.classList.remove('hidden');
-  els.repoResultsName.textContent = repo.repo;
+  const overview = repo.overview || {};
+  els.repoResultsName.textContent = overview.name || repo.repo;
   els.repoResultsCount.textContent = `${repo.issues.length} open issues found`;
 
   if (!repo.issues.length) {
     els.repoIssuesList.innerHTML = '<div class="detail-empty">No open issues were found for this repository.</div>';
     return;
   }
+
+  const projectSummary = overview.projectSummary
+    ? `
+      <article class="repo-overview-card">
+        <div class="repo-overview-header">
+          <div>
+            <p class="eyebrow">Project overview</p>
+            <h4>${escapeHtml(overview.name || repo.repo)}</h4>
+          </div>
+          ${overview.url ? `<a href="${escapeHtml(overview.url)}" target="_blank" rel="noreferrer" class="button button-secondary">Open repo</a>` : ''}
+        </div>
+        <p>${escapeHtml(overview.projectSummary)}</p>
+        <div class="list-meta">
+          ${overview.language ? createTag(overview.language) : ''}
+          ${typeof overview.stars === 'number' ? createTag(`${overview.stars} stars`) : ''}
+          ${typeof overview.openIssues === 'number' ? createTag(`${overview.openIssues} open issues`) : ''}
+          ${(overview.topics || []).slice(0, 4).map(topic => createTag(escapeHtml(topic))).join('')}
+        </div>
+      </article>
+    `
+    : '';
 
   els.repoIssuesList.innerHTML = repo.issues.slice(0, 20).map(issue => `
     <article class="repo-issue-card">
@@ -301,10 +363,48 @@ function renderRepoIssues(repo) {
       <div class="list-meta">
         ${createTag(`#${issue.number}`)}
         ${createTag(issue.updatedAt ? issue.updatedAt.slice(0, 10) : 'Open')}
+        ${createTag(`${issue.issueFitScore || 0}/100`, `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
+        ${createTag(issue.issueFitLabel || 'Low fit', `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
         ${(issue.labels || []).slice(0, 4).map(label => createTag(escapeHtml(label))).join('')}
       </div>
+      <section class="repo-insight-block">
+        <h5>Issue fit score</h5>
+        <p>${escapeHtml(issue.issueFitReason || 'No fit rationale available yet.')}</p>
+      </section>
+      <div class="repo-insight-grid">
+        <section class="repo-insight-block">
+          <h5>What is happening</h5>
+          <p>${escapeHtml(issue.conversationSummary || 'No discussion summary available yet.')}</p>
+        </section>
+        <section class="repo-insight-block">
+          <h5>What the maintainer expects</h5>
+          <p>${escapeHtml(issue.expectationSummary || 'No expectation summary available yet.')}</p>
+        </section>
+      </div>
+      <section class="repo-insight-block">
+        <h5>Quick plan</h5>
+        <ol class="repo-plan-list">
+          ${(issue.quickPlan || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}
+        </ol>
+      </section>
+      <section class="repo-insight-block">
+        <h5>Recent conversation</h5>
+        ${(issue.recentConversation || []).length ? `
+          <div class="repo-comment-list">
+            ${issue.recentConversation.map(comment => `
+              <article class="repo-comment">
+                <strong>${escapeHtml(comment.author)}</strong>
+                <span>${escapeHtml(comment.createdAt ? comment.createdAt.slice(0, 10) : '')}</span>
+                <p>${escapeHtml(comment.body)}</p>
+              </article>
+            `).join('')}
+          </div>
+        ` : '<p>No comments yet. The issue body is still the main source of context.</p>'}
+      </section>
     </article>
   `).join('');
+
+  els.repoIssuesList.innerHTML = projectSummary + els.repoIssuesList.innerHTML;
 }
 
 async function checkRepoIssues(event) {
@@ -328,6 +428,43 @@ async function checkRepoIssues(event) {
 
   renderRepoIssues(data.repo);
   els.repoStatus.textContent = `Loaded ${data.repo.issues.length} issues for ${data.repo.repo}`;
+}
+
+async function addRepositoryToWatchlist(event) {
+  event.preventDefault();
+  const repo = els.watchlistInput.value.trim();
+  if (!repo) {
+    els.watchlistStatus.textContent = 'Enter a GitHub repo URL or owner/repo.';
+    return;
+  }
+
+  els.watchlistStatus.textContent = 'Adding repository';
+  const res = await authorizedFetch('/api/repositories', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repo }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to add repository');
+  }
+
+  els.watchlistInput.value = '';
+  els.watchlistStatus.textContent = `${data.repository.repo} added to the scheduled watchlist`;
+  await loadRepositories();
+}
+
+async function removeRepository(id) {
+  els.watchlistStatus.textContent = 'Removing repository';
+  const res = await authorizedFetch(`/api/repositories/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to remove repository');
+  }
+  els.watchlistStatus.textContent = 'Repository removed from the scheduled watchlist';
+  await loadRepositories();
 }
 
 async function saveCurrentOpportunity(event) {
@@ -422,6 +559,11 @@ function wireEvents() {
       els.repoStatus.textContent = error.message;
     });
   });
+  els.watchlistForm.addEventListener('submit', event => {
+    addRepositoryToWatchlist(event).catch(error => {
+      els.watchlistStatus.textContent = error.message;
+    });
+  });
   els.runScanButton.addEventListener('click', () => {
     triggerScan().catch(error => {
       els.scanStatus.textContent = error.message;
@@ -431,6 +573,9 @@ function wireEvents() {
 }
 
 wireEvents();
+loadRepositories().catch(error => {
+  els.watchlistStatus.textContent = error.message;
+});
 loadOpportunities().catch(error => {
   els.scanStatus.textContent = error.message;
   els.list.innerHTML = `<div class="detail-empty">${escapeHtml(error.message)}</div>`;

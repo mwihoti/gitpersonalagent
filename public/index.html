@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Dan Agent Dashboard</title>
+    <title>Repository Intelligence Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
@@ -13,11 +13,11 @@
     <div class="shell">
       <header class="hero">
         <div>
-          <p class="eyebrow">Stacks contribution CRM</p>
-          <h1>Plan your next PRs. Track the work that actually ships.</h1>
+          <p class="eyebrow">Repository Intelligence</p>
+          <h1>Track the right repos. Turn issue activity into a workable pipeline.</h1>
           <p class="hero-copy">
-            Review the agent's daily opportunities, set priorities, assign next steps,
-            and keep an activity log for every contest entry.
+            Review AI-ranked opportunities, inspect issue context, assign next steps,
+            and manage the GitHub watchlist your team actually wants scanned.
           </p>
         </div>
         <div class="hero-actions">
@@ -60,6 +60,27 @@
             <div>
               <p class="eyebrow">Repo Scout</p>
               <h2>Check any GitHub project</h2>
+            </div>
+          </div>
+          <div class="repo-admin-grid">
+            <form id="watchlist-form" class="repo-form">
+              <label class="repo-input">
+                <span>Add repo to watchlist</span>
+                <input id="watchlist-input" type="text" placeholder="owner/repo or https://github.com/owner/repo">
+              </label>
+              <button type="submit" class="button button-primary">Add repository</button>
+              <span id="watchlist-status" class="status-pill">Managed repos will be used for scheduled scans.</span>
+            </form>
+            <div class="watchlist-panel">
+              <div class="repo-results-header">
+                <div>
+                  <p class="eyebrow">Watchlist</p>
+                  <h3>Scheduled scan targets</h3>
+                </div>
+              </div>
+              <div id="watchlist-list" class="watchlist-list">
+                <div class="detail-empty">No repositories added yet.</div>
+              </div>
             </div>
           </div>
           <form id="repo-form" class="repo-form">
