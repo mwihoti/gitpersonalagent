@@ -16,6 +16,25 @@ function makeHeaders() {
   return headers;
 }
 
+function shouldRetryWithoutAuth(res, usedAuth) {
+  return usedAuth && (res.status === 401 || res.status === 403);
+}
+
+async function githubRequest(url) {
+  const headers = makeHeaders();
+  const usedAuth = Boolean(headers.Authorization);
+  const first = await fetch(url, { headers });
+
+  if (!shouldRetryWithoutAuth(first, usedAuth)) {
+    return first;
+  }
+
+  console.warn(`  GitHub auth rejected (${first.status}) for ${url} — retrying without token`);
+  return fetch(url, {
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+}
+
 // Recent issues updated in the last N days
 async function fetchRecentIssues(repo) {
   const params = new URLSearchParams({
@@ -26,10 +45,7 @@ async function fetchRecentIssues(repo) {
     since: since(),
   });
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/issues?${params}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`https://api.github.com/repos/${repo}/issues?${params}`);
   if (!res.ok) {
     console.warn(`  GitHub ${repo} (recent): ${res.status}`);
     return [];
@@ -46,10 +62,7 @@ async function fetchOpenIssues(repo, perPage = 30) {
     per_page: String(perPage),
   });
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/issues?${params}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`https://api.github.com/repos/${repo}/issues?${params}`);
   if (!res.ok) {
     console.warn(`  GitHub ${repo} (open): ${res.status}`);
     return [];
@@ -68,10 +81,7 @@ async function fetchGoodFirstIssues(repo) {
     per_page: '10',
   });
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/issues?${params}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`https://api.github.com/repos/${repo}/issues?${params}`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.filter(i => !i.pull_request);
@@ -87,10 +97,7 @@ async function fetchBugIssues(repo) {
     per_page: '10',
   });
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/issues?${params}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`https://api.github.com/repos/${repo}/issues?${params}`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.filter(i => !i.pull_request);
@@ -104,10 +111,7 @@ async function fetchRecentPRActivity(repo) {
     per_page: '10',
   });
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/pulls?${params}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`https://api.github.com/repos/${repo}/pulls?${params}`);
   if (!res.ok) return [];
   const prs = await res.json();
   return prs.map(p => ({
@@ -119,10 +123,7 @@ async function fetchRecentPRActivity(repo) {
 }
 
 async function fetchRepoDetails(repo) {
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`https://api.github.com/repos/${repo}`);
 
   if (!res.ok) {
     throw new Error(`GitHub repo lookup failed for ${repo}: ${res.status}`);
@@ -151,10 +152,7 @@ async function fetchIssueComments(issue) {
     direction: 'desc',
   });
 
-  const res = await fetch(
-    `${issue.comments_url}?${params}`,
-    { headers: makeHeaders() }
-  );
+  const res = await githubRequest(`${issue.comments_url}?${params}`);
 
   if (!res.ok) return [];
   return res.json();
