@@ -33,8 +33,14 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const digest = await runScan();
-    return sendJson(res, 200, { ok: true, digest });
+    const trigger = isVercelCron ? 'vercel-cron' : (req.method === 'POST' ? 'manual-api' : 'cron');
+    const result = await runScan({ trigger });
+    return sendJson(res, 200, {
+      ok: true,
+      digest: result.digest,
+      reused: result.reused,
+      run: result.run,
+    });
   } catch (error) {
     return sendJson(res, 500, { error: error.message });
   }

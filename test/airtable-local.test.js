@@ -53,3 +53,77 @@ test('saveDigest preserves all local records across concurrent writes', async t 
     digests.map(digest => digest.contest_digest[0].opportunity).sort()
   );
 });
+
+test('updateOpportunity can clear due date and PR URL fields', async t => {
+  const airtable = await loadAirtableModule(t);
+
+  await airtable.saveDigest({
+    date: '2026-05-16',
+    quick_plan: 'plan',
+    contest_digest: [{
+      opportunity: 'Opportunity',
+      repo: 'owner/repo',
+      why_it_qualifies: 'qualifies',
+      suggested_action: 'do the work',
+      clarity_tip: 'npm test',
+      issue_url: 'https://github.com/owner/repo/issues/1',
+      code_skeleton: '// code',
+      why_it_matters: 'impact',
+      effort: 'low',
+    }],
+  });
+
+  const initial = await airtable.listOpportunities();
+  const id = initial.opportunities[0].id;
+
+  await airtable.updateOpportunity(id, {
+    dueDate: '2026-05-20',
+    prUrl: 'https://github.com/owner/repo/pull/1',
+  });
+  const updated = await airtable.updateOpportunity(id, {
+    dueDate: '',
+    prUrl: '',
+  });
+
+  assert.equal(updated.dueDate, '');
+  assert.equal(updated.prUrl, '');
+});
+
+test('saveDigest deduplicates recurring issue entries into one queue item', async t => {
+  const airtable = await loadAirtableModule(t);
+
+  await airtable.saveDigest({
+    date: '2026-05-15',
+    quick_plan: 'plan-1',
+    contest_digest: [{
+      opportunity: 'Same issue',
+      repo: 'owner/repo',
+      why_it_qualifies: 'qualifies',
+      suggested_action: 'do the work',
+      clarity_tip: 'npm test',
+      issue_url: 'https://github.com/owner/repo/issues/9',
+      code_skeleton: '// code',
+      why_it_matters: 'impact',
+      effort: 'low',
+    }],
+  });
+
+  await airtable.saveDigest({
+    date: '2026-05-16',
+    quick_plan: 'plan-2',
+    contest_digest: [{
+      opportunity: 'Same issue',
+      repo: 'owner/repo',
+      why_it_qualifies: 'qualifies again',
+      suggested_action: 'do the work again',
+      clarity_tip: 'npm test',
+      issue_url: 'https://github.com/owner/repo/issues/9',
+      code_skeleton: '// newer code',
+      why_it_matters: 'impact',
+      effort: 'medium',
+    }],
+  });
+
+  const result = await airtable.listOpportunities();
+  assert.equal(result.opportunities.length, 1);
+});

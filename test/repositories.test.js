@@ -12,12 +12,24 @@ async function loadRepositoriesModule(t) {
   });
 
   process.env.DAN_AGENT_DATA_DIR = tmpDir;
+  process.env.GITHUB_TOKEN = '';
   const modulePath = path.resolve(__dirname, '..', 'src', 'repositories.js');
+  const githubPath = path.resolve(__dirname, '..', 'src', 'github.js');
   delete require.cache[modulePath];
+  delete require.cache[githubPath];
   return require(modulePath);
 }
 
 test('addRepository normalizes URLs and persists unique repos', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ full_name: 'vercel/next.js' }),
+  });
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
   const repositories = await loadRepositoriesModule(t);
 
   const first = await repositories.addRepository('https://github.com/vercel/next.js/issues');
@@ -32,6 +44,15 @@ test('addRepository normalizes URLs and persists unique repos', async t => {
 });
 
 test('removeRepository deletes saved entries', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ full_name: 'openai/openai-node' }),
+  });
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
   const repositories = await loadRepositoriesModule(t);
 
   const saved = await repositories.addRepository('openai/openai-node');
@@ -39,4 +60,22 @@ test('removeRepository deletes saved entries', async t => {
 
   const all = await repositories.listRepositories();
   assert.equal(all.length, 0);
+});
+
+test('addRepository rejects repositories GitHub cannot resolve', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false,
+    status: 404,
+  });
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const repositories = await loadRepositoriesModule(t);
+
+  await assert.rejects(
+    repositories.addRepository('missing/repo'),
+    /GitHub repository not found/i
+  );
 });

@@ -1,5 +1,7 @@
 'use strict';
 const config = require('./config');
+const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const EFFORT_VALUES = new Set(['low', 'medium', 'high']);
 
 const SYSTEM_PROMPT = `You are "Repository Intelligence Assistant" — a precise engineering copilot that helps teams monitor GitHub repositories and turn issue activity into practical delivery plans.
 
@@ -86,7 +88,7 @@ function trimForCloud(repoData, options = {}) {
 
 // Fallback chain (cloud): gemini-2.5-flash-lite → gemini-2.5-flash → Groq.
 // Falls back to local Ollama when no cloud keys are set.
-async function analyzeWithGemma(repoData, news) {
+async function analyzeDigestWithModel(repoData, news) {
   const trimmedRepoData = trimForCloud(repoData, {
     issuesPerRepo: 4,
     bodyChars: 120,
@@ -249,20 +251,123 @@ function parseJSON(raw) {
     .trim();
 
   try {
-    return JSON.parse(stripped);
-  } catch (_) {
-    // Fallback: extract the outermost {...} block in case the model prepended
-    // or appended prose around the JSON object.
-    const start = raw.indexOf('{');
-    const end = raw.lastIndexOf('}');
-    if (start !== -1 && end > start) {
-      try {
-        return JSON.parse(raw.slice(start, end + 1));
-      } catch (_2) { /* fall through to error */ }
+    return validateDigest(JSON.parse(stripped));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
     }
-    console.error('Model returned non-JSON:', stripped.slice(0, 400));
-    throw new Error('Failed to parse model JSON response');
   }
+
+  // Fallback: extract the outermost {...} block in case the model prepended
+  // or appended prose around the JSON object.
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    const extracted = raw.slice(start, end + 1);
+    try {
+      return validateDigest(JSON.parse(extracted));
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
+    }
+  }
+
+  console.error('Model returned non-JSON:', stripped.slice(0, 400));
+  throw new Error('Failed to parse model JSON response');
 }
 
-module.exports = { analyzeWithGemma };
+function assertString(value, field, options = {}) {
+  const {
+    allowEmpty = false,
+    maxLength = 4000,
+  } = options;
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid model response: "${field}" must be a string`);
+  }
+
+  const normalized = value.trim();
+  if (!allowEmpty && !normalized) {
+    throw new Error(`Invalid model response: "${field}" cannot be empty`);
+  }
+  if (normalized.length > maxLength) {
+    throw new Error(`Invalid model response: "${field}" exceeds ${maxLength} chars`);
+  }
+  return normalized;
+}
+
+function validateOpportunity(item, index) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    throw new Error(`Invalid model response: contest_digest[${index}] must be an object`);
+  }
+
+  const repo = assertString(item.repo, `contest_digest[${index}].repo`, { maxLength: 200 });
+  if (!REPO_PATTERN.test(repo)) {
+    throw new Error(`Invalid model response: contest_digest[${index}].repo must be owner/repo`);
+  }
+
+  const effort = assertString(item.effort, `contest_digest[${index}].effort`, { maxLength: 20 }).toLowerCase();
+  if (!EFFORT_VALUES.has(effort)) {
+    throw new Error(`Invalid model response: contest_digest[${index}].effort must be low, medium, or high`);
+  }
+
+  const issueUrl = assertString(item.issue_url ?? '', `contest_digest[${index}].issue_url`, {
+    allowEmpty: true,
+    maxLength: 500,
+  });
+  if (issueUrl && !/^https?:\/\//i.test(issueUrl)) {
+    throw new Error(`Invalid model response: contest_digest[${index}].issue_url must be an http(s) URL`);
+  }
+
+  return {
+    opportunity: assertString(item.opportunity, `contest_digest[${index}].opportunity`, { maxLength: 200 }),
+    repo,
+    issue_url: issueUrl,
+    why_it_qualifies: assertString(item.why_it_qualifies, `contest_digest[${index}].why_it_qualifies`, { maxLength: 2000 }),
+    suggested_action: assertString(item.suggested_action, `contest_digest[${index}].suggested_action`, { maxLength: 2500 }),
+    code_skeleton: assertString(item.code_skeleton, `contest_digest[${index}].code_skeleton`, { maxLength: 12000 }),
+    clarity_tip: assertString(item.clarity_tip ?? '', `contest_digest[${index}].clarity_tip`, { allowEmpty: true, maxLength: 500 }),
+    why_it_matters: assertString(item.why_it_matters, `contest_digest[${index}].why_it_matters`, { maxLength: 2000 }),
+    effort,
+  };
+}
+
+function validateDigest(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Invalid model response: root payload must be an object');
+  }
+
+  const date = assertString(payload.date, 'date', { maxLength: 10 });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('Invalid model response: "date" must be YYYY-MM-DD');
+  }
+
+  if (!Array.isArray(payload.contest_digest)) {
+    throw new Error('Invalid model response: "contest_digest" must be an array');
+  }
+  if (payload.contest_digest.length > 50) {
+    throw new Error('Invalid model response: "contest_digest" exceeds 50 items');
+  }
+
+  const news = payload.tech_news_summary;
+  if (!Array.isArray(news)) {
+    throw new Error('Invalid model response: "tech_news_summary" must be an array');
+  }
+  if (news.length > 20) {
+    throw new Error('Invalid model response: "tech_news_summary" exceeds 20 items');
+  }
+
+  return {
+    date,
+    contest_digest: payload.contest_digest.map(validateOpportunity),
+    quick_plan: assertString(payload.quick_plan, 'quick_plan', { maxLength: 2000 }),
+    tech_news_summary: news.map((item, index) =>
+      assertString(item, `tech_news_summary[${index}]`, { maxLength: 300 })),
+  };
+}
+
+module.exports = {
+  analyzeWithGemma: analyzeDigestWithModel,
+  analyzeDigestWithModel,
+  validateDigest,
+};

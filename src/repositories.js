@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs/promises');
 const path = require('path');
+const { assertRepositoryAccessible } = require('./github');
 
 const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
   ? path.join('/tmp', 'danagent-data')
@@ -63,6 +64,8 @@ async function addRepository(input) {
   if (exists) {
     return shapeRepository(exists);
   }
+
+  await assertRepositoryAccessible(repo);
 
   const record = {
     id: `repo-${Date.now()}`,

@@ -10,9 +10,9 @@ Every morning at 8am Nairobi time the agent:
 
 1. **Scans GitHub** — pulls open issues from the repositories in your dashboard watchlist, prioritising `good first issue`, `help wanted`, and `bug` labels
 2. **Fetches tech news** — TechCrunch, Wired, Ars Technica, TLDR Tech, GitHub Blog, GitHub Releases, Hacker News
-3. **Analyses with Gemma 4** — identifies the best implementation opportunities and generates real code skeletons
+3. **Analyses with a configured model provider** — prefers Gemini or Groq when keys are present, and falls back to Ollama locally
 4. **Saves to Airtable** — structured database of opportunities with effort level, suggested action, and starter code
-5. **Notifies via Telegram** — sends a digest with top opportunities and a short plan
+5. **Notifies via Telegram** — sends a digest with top opportunities and a short plan, with WhatsApp as fallback
 
 ---
 
@@ -22,7 +22,7 @@ Every morning at 8am Nairobi time the agent:
 agent.js                    ← Orchestrator + cron scheduler
 src/
 ├── github.js               ← GitHub API scanner (issues + releases)
-├── gemma.js                ← Ollama / Gemma 4 31B Cloud interface
+├── gemma.js                ← Model-provider interface + digest validation
 ├── news.js                 ← Multi-source news aggregator (RSS + APIs)
 ├── airtable.js             ← Airtable record writer
 ├── whatsapp.js             ← Telegram (primary) + WhatsApp/CallMeBot (fallback)
@@ -34,8 +34,8 @@ scripts/
 **Data flow:**
 ```
 GitHub API ─┐
-            ├─→ Gemma 4 31B Cloud ─→ JSON digest ─→ Airtable
-News/RSS  ──┘                                    └─→ Telegram
+            ├─→ LLM provider (Gemini/Groq/Ollama) ─→ JSON digest ─→ Airtable
+News/RSS  ──┘                                                └─→ Telegram
 ```
 
 ---

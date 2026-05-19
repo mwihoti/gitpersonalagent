@@ -176,12 +176,18 @@ async function syncLocalRecords(records) {
 }
 
 function recordKey(record) {
-  return [
-    record.Date || record.date || '',
-    record.Repo || record.repo || '',
-    record.Opportunity || record.opportunity || '',
-    record['Issue URL'] || record.issueUrl || '',
-  ].join('::');
+  const repo = String(record.Repo || record.repo || '').trim().toLowerCase();
+  const issueUrl = String(record['Issue URL'] || record.issueUrl || '').trim().toLowerCase();
+  const opportunity = String(record.Opportunity || record.opportunity || '').trim().toLowerCase();
+
+  if (repo && issueUrl) {
+    return `${repo}::${issueUrl}`;
+  }
+  if (repo && opportunity) {
+    return `${repo}::${opportunity}`;
+  }
+
+  return '';
 }
 
 function isLocalId(id) {
@@ -219,8 +225,8 @@ function toFields(updates) {
   if (updates.status !== undefined) fields.Status = updates.status;
   if (updates.priority !== undefined) fields.Priority = updates.priority;
   if (updates.owner !== undefined) fields.Owner = updates.owner;
-  if (updates.dueDate) fields['Due Date'] = updates.dueDate;
-  if (updates.prUrl) fields['PR URL'] = updates.prUrl;
+  if (updates.dueDate !== undefined) fields['Due Date'] = updates.dueDate;
+  if (updates.prUrl !== undefined) fields['PR URL'] = updates.prUrl;
   if (updates.nextStep !== undefined) fields['Next Step'] = updates.nextStep;
   if (updates.activityLog !== undefined) fields['Activity Log'] = updates.activityLog;
   if (updates.quickPlan !== undefined) fields['Quick Plan'] = updates.quickPlan;

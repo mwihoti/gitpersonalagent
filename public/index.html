@@ -6,23 +6,47 @@
     <title>Repository Intelligence Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <div class="shell">
       <header class="hero">
-        <div>
+        <div class="hero-main">
           <p class="eyebrow">Repository Intelligence</p>
-          <h1>Track the right repos. Turn issue activity into a workable pipeline.</h1>
+          <h1>Turn noisy GitHub activity into a working delivery queue.</h1>
           <p class="hero-copy">
-            Review AI-ranked opportunities, inspect issue context, assign next steps,
-            and manage the GitHub watchlist your team actually wants scanned.
+            Review AI-ranked opportunities, inspect issue context, assign ownership,
+            and run a watchlist that stays focused on real implementation work.
           </p>
+          <div class="hero-rail">
+            <div class="hero-chip">
+              <span class="hero-chip-label">Signal</span>
+              <strong>Issues + news + fit score</strong>
+            </div>
+            <div class="hero-chip">
+              <span class="hero-chip-label">Workflow</span>
+              <strong>Scan, triage, assign, ship</strong>
+            </div>
+            <div class="hero-chip">
+              <span class="hero-chip-label">Surface</span>
+              <strong>Queue, repo scout, run history</strong>
+            </div>
+          </div>
         </div>
-        <div class="hero-actions">
-          <button id="run-scan-button" class="button button-primary">Run scan now</button>
-          <div id="scan-status" class="status-pill">Ready</div>
+        <div class="hero-side">
+          <div class="hero-command-card">
+            <p class="eyebrow">Launch</p>
+            <h2>Run the next scan when the queue needs fresh signal.</h2>
+            <div class="hero-actions">
+              <button id="run-scan-button" class="button button-primary">Run scan now</button>
+              <div id="scan-status" class="status-pill">Ready</div>
+            </div>
+            <div class="hero-command-meta">
+              <span>Watchlist-backed scans</span>
+              <span>Manual + scheduled runs</span>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -32,6 +56,7 @@
             <div>
               <p class="eyebrow">Overview</p>
               <h2>Daily pipeline</h2>
+              <p class="section-copy">A compact operations view for the current queue, execution progress, and the most recent scan activity.</p>
             </div>
             <div id="storage-badge" class="storage-badge">Loading</div>
           </div>
@@ -53,6 +78,21 @@
               <strong id="metric-high" class="metric-value">0</strong>
             </article>
           </div>
+          <div class="ops-grid">
+            <article class="ops-card">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Operations</p>
+                  <h2>Scan status</h2>
+                </div>
+                <div id="current-run-badge" class="status-pill">Idle</div>
+              </div>
+              <p id="last-run-summary" class="hero-copy">No scans recorded yet.</p>
+              <div id="recent-runs-list" class="watchlist-list">
+                <div class="detail-empty">Run a scan to start building history.</div>
+              </div>
+            </article>
+          </div>
         </section>
 
         <section class="panel repo-panel">
@@ -60,6 +100,7 @@
             <div>
               <p class="eyebrow">Repo Scout</p>
               <h2>Check any GitHub project</h2>
+              <p class="section-copy">Validate a repository before adding it to the watchlist, then inspect the strongest issues and maintainer signals.</p>
             </div>
           </div>
           <div class="repo-admin-grid">
@@ -107,6 +148,7 @@
             <div>
               <p class="eyebrow">Workbench</p>
               <h2>Opportunity queue</h2>
+              <p class="section-copy">Filter the active queue, then use the detail pane as the operating surface for planning, ownership, and execution notes.</p>
             </div>
             <div class="pagination-summary">
               <span id="pagination-summary">Showing 0 of 0</span>
@@ -139,6 +181,10 @@
 
           <div class="board">
             <div class="list-panel">
+              <div class="panel-banner">
+                <span class="panel-banner-kicker">Queue view</span>
+                <strong>Prioritized opportunities grouped by scan date</strong>
+              </div>
               <div class="pager">
                 <button id="prev-page-button" type="button" class="button button-secondary">Previous</button>
                 <button id="next-page-button" type="button" class="button button-secondary">Next</button>
@@ -147,6 +193,10 @@
               <div id="opportunities-list" class="opportunities-list"></div>
             </div>
             <aside class="detail-panel">
+              <div class="panel-banner detail-banner">
+                <span class="panel-banner-kicker">Execution detail</span>
+                <strong>Turn the selected item into an actual plan of record</strong>
+              </div>
               <div id="detail-empty" class="detail-empty">
                 Select an opportunity to inspect the issue, create a plan, and log work.
               </div>

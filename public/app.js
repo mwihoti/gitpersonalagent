@@ -19,6 +19,9 @@ const els = {
   metricDone: document.getElementById('metric-done'),
   metricHigh: document.getElementById('metric-high'),
   storageBadge: document.getElementById('storage-badge'),
+  currentRunBadge: document.getElementById('current-run-badge'),
+  lastRunSummary: document.getElementById('last-run-summary'),
+  recentRunsList: document.getElementById('recent-runs-list'),
   runScanButton: document.getElementById('run-scan-button'),
   scanStatus: document.getElementById('scan-status'),
   detailEmpty: document.getElementById('detail-empty'),
@@ -118,6 +121,36 @@ function renderStats() {
   els.metricDone.textContent = String(done);
   els.metricHigh.textContent = String(high);
   els.storageBadge.textContent = `Storage: ${state.storage}`;
+}
+
+function renderHealth(payload) {
+  const currentRun = payload.currentRun;
+  const recentRuns = payload.recentRuns || [];
+  els.currentRunBadge.textContent = currentRun ? `Running • ${currentRun.trigger}` : 'Idle';
+
+  const lastRun = recentRuns[0];
+  if (!lastRun) {
+    els.lastRunSummary.textContent = 'No scans recorded yet.';
+    els.recentRunsList.innerHTML = '<div class="detail-empty">Run a scan to start building history.</div>';
+    return;
+  }
+
+  const duration = typeof lastRun.durationMs === 'number'
+    ? `${Math.round(lastRun.durationMs / 100) / 10}s`
+    : 'unknown duration';
+  els.lastRunSummary.textContent = `${lastRun.status} via ${lastRun.trigger} on ${new Date(lastRun.startedAt).toLocaleString()} • ${lastRun.opportunities || 0} opportunities • ${duration}`;
+
+  els.recentRunsList.innerHTML = recentRuns.map(run => `
+    <article class="watchlist-item">
+      <div>
+        <strong>${escapeHtml(String(run.status || 'unknown').toUpperCase())} • ${escapeHtml(run.trigger || 'unknown')}</strong>
+        <p>${escapeHtml(new Date(run.startedAt).toLocaleString())} • repos ${run.repositories || 0} • issues ${run.totalIssues || 0} • opportunities ${run.opportunities || 0}</p>
+      </div>
+      <div class="watchlist-actions">
+        ${createTag(`${Math.round((run.durationMs || 0) / 100) / 10}s`)}
+      </div>
+    </article>
+  `).join('');
 }
 
 function applyFilters() {
@@ -347,6 +380,14 @@ async function loadRepositories() {
   applyFilters();
 }
 
+async function loadHealth() {
+  const res = await authorizedFetch('/api/health');
+  if (!res.ok) {
+    throw new Error(await readErrorResponse(res));
+  }
+  renderHealth(await res.json());
+}
+
 function renderRepoIssues(repo) {
   els.repoResults.classList.remove('hidden');
   const overview = repo.overview || {};
@@ -573,8 +614,9 @@ async function triggerScan() {
     if (!res.ok) {
       throw new Error(data.error || 'Scan failed');
     }
-    els.scanStatus.textContent = `Scan completed: ${data.digest?.contest_digest?.length || 0} opportunities`;
+    els.scanStatus.textContent = `${data.reused ? 'Scan reused' : 'Scan completed'}: ${data.digest?.contest_digest?.length || 0} opportunities`;
     await loadOpportunities();
+    await loadHealth();
   } catch (error) {
     els.scanStatus.textContent = error.message;
   } finally {
@@ -639,4 +681,7 @@ loadRepositories().catch(error => {
 loadOpportunities().catch(error => {
   els.scanStatus.textContent = error.message;
   els.list.innerHTML = `<div class="detail-empty">${escapeHtml(error.message)}</div>`;
+});
+loadHealth().catch(error => {
+  els.lastRunSummary.textContent = error.message;
 });

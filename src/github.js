@@ -131,6 +131,17 @@ async function fetchRepoDetails(repo) {
   return res.json();
 }
 
+async function assertRepositoryAccessible(repo) {
+  try {
+    await fetchRepoDetails(repo);
+  } catch (error) {
+    if (/404/.test(String(error.message))) {
+      throw new Error(`GitHub repository not found: ${repo}`);
+    }
+    throw new Error(`GitHub repository check failed for ${repo}: ${error.message}`);
+  }
+}
+
 async function fetchIssueComments(issue) {
   if (!issue.comments) return [];
 
@@ -229,4 +240,4 @@ async function scanRepo(repo, options = {}) {
   };
 }
 
-module.exports = { scanRepos, scanRepo };
+module.exports = { scanRepos, scanRepo, assertRepositoryAccessible };

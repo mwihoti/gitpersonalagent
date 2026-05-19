@@ -53,12 +53,12 @@ async function sendTelegram(message) {
   }
 }
 
-// ─── Unified send (WhatsApp first, Telegram as fallback) ─────────────────────
+// ─── Unified send (Telegram first, WhatsApp as fallback) ─────────────────────
 
 async function sendNotification(message) {
-  const sent = await sendWhatsApp(message);
+  const sent = await sendTelegram(message);
   if (!sent) {
-    await sendTelegram(message);
+    await sendWhatsApp(message);
   }
 }
 
