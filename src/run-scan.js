@@ -22,7 +22,7 @@ async function runScan(options = {}) {
     const repos = await getScanRepositories();
     run.repositories = repos.length;
     if (!repos.length) {
-      throw new Error('No repositories configured. Add at least one GitHub repo from the dashboard watchlist.');
+      throw new Error('No repositories configured and BitcoinDevs discovery returned no repos. Add a dashboard watchlist repo or check BITCOINDEVS_ISSUES_URL.');
     }
 
     logger.log('\n1/3 Scanning GitHub repos + news...');

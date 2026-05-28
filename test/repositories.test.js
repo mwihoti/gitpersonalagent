@@ -13,10 +13,15 @@ async function loadRepositoriesModule(t) {
 
   process.env.DAN_AGENT_DATA_DIR = tmpDir;
   process.env.GITHUB_TOKEN = '';
+  delete process.env.BITCOINDEVS_DISCOVERY;
+  delete process.env.BITCOINDEVS_ISSUES_URL;
+  delete process.env.BITCOINDEVS_MAX_REPOS;
   const modulePath = path.resolve(__dirname, '..', 'src', 'repositories.js');
   const githubPath = path.resolve(__dirname, '..', 'src', 'github.js');
+  const bitcoinDevsPath = path.resolve(__dirname, '..', 'src', 'bitcoindevs.js');
   delete require.cache[modulePath];
   delete require.cache[githubPath];
+  delete require.cache[bitcoinDevsPath];
   return require(modulePath);
 }
 
@@ -78,4 +83,23 @@ test('addRepository rejects repositories GitHub cannot resolve', async t => {
     repositories.addRepository('missing/repo'),
     /GitHub repository not found/i
   );
+});
+
+test('getScanRepositories falls back to BitcoinDevs when watchlist is empty', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    text: async () => `
+      {\\"url\\":\\"https://github.com/payjoin/rust-payjoin/issues/1522\\",\\"publishedAt\\":\\"2026-05-04T00:00:00Z\\",\\"title\\":\\"Add lcov.info\\",\\"labels\\":[\\"good first issue\\"],\\"number\\":1522}
+      {\\"url\\":\\"https://github.com/bitcoin/bitcoin/issues/35399\\",\\"publishedAt\\":\\"2026-05-28T00:00:00Z\\",\\"title\\":\\"Remove template\\",\\"labels\\":[\\"good first issue\\"],\\"number\\":35399}
+    `,
+  });
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const repositories = await loadRepositoriesModule(t);
+
+  const repos = await repositories.getScanRepositories();
+  assert.deepEqual(repos, ['bitcoin/bitcoin', 'payjoin/rust-payjoin']);
 });

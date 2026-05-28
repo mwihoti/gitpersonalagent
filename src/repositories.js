@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs/promises');
 const path = require('path');
+const { fetchBitcoinDevsRepositories } = require('./bitcoindevs');
 const { assertRepositoryAccessible } = require('./github');
 
 const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
@@ -86,9 +87,27 @@ async function removeRepository(id) {
   await writeRepoStore(next);
 }
 
+function isBitcoinDevsDiscoveryEnabled() {
+  return String(process.env.BITCOINDEVS_DISCOVERY || 'true').toLowerCase() !== 'false';
+}
+
 async function getScanRepositories() {
   const repos = await listRepositories();
-  return repos.map(entry => entry.repo);
+  const savedRepos = repos.map(entry => entry.repo);
+  if (savedRepos.length || !isBitcoinDevsDiscoveryEnabled()) {
+    return savedRepos;
+  }
+
+  try {
+    const discoveredRepos = await fetchBitcoinDevsRepositories();
+    if (discoveredRepos.length) {
+      console.log(`  Using ${discoveredRepos.length} BitcoinDevs good-first-issue repos as scan targets`);
+    }
+    return discoveredRepos;
+  } catch (error) {
+    console.warn(`  BitcoinDevs discovery skipped: ${error.message}`);
+    return [];
+  }
 }
 
 module.exports = {

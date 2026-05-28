@@ -1,5 +1,11 @@
 name: Daily Stacks Scan
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BITCOINDEVS_ISSUES_URL: https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue
+  BITCOINDEVS_MAX_REPOS: 12
+  BITCOINDEVS_DISCOVERY: true
+
 on:
   schedule:
     - cron: '0 5 * * *'   # 8am Nairobi time (EAT = UTC+3)
@@ -16,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies

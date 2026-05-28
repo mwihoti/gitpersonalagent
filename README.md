@@ -114,7 +114,7 @@ npm start
 
 Runs at 8am Nairobi time (Africa/Nairobi) every day.
 
-Before the scheduled scan becomes useful, add repositories from the dashboard watchlist. Scheduled scans now read from that persisted watchlist instead of `.env`.
+Scheduled scans use the dashboard watchlist first. If the watchlist is empty, the agent falls back to the BitcoinDevs good-first-issues page and scans the GitHub repositories linked there.
 
 ---
 
@@ -147,6 +147,11 @@ WHATSAPP_APIKEY=...
 # Cron schedule (default: 8am Nairobi daily)
 SCAN_SCHEDULE=0 8 * * *
 
+# BitcoinDevs fallback discovery
+BITCOINDEVS_ISSUES_URL=https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue
+BITCOINDEVS_MAX_REPOS=12
+BITCOINDEVS_DISCOVERY=true
+
 # Protect dashboard APIs and manual scans
 DAN_AGENT_API_KEY=replace_with_a_long_random_string
 
@@ -173,6 +178,8 @@ Manage repositories from the dashboard:
 1. Open the app
 2. Add `owner/repo` or a GitHub repo URL in the watchlist form
 3. Use `Run scan now` or let the daily schedule use the saved watchlist
+
+If no repositories are saved, scheduled scans discover repositories from BitcoinDevs good-first-issues instead.
 
 ---
 
