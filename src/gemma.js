@@ -49,7 +49,16 @@ function buildUserMessage(repoData, news, options = {}) {
   const {
     newsLimit = 25,
     scanLabel = 'last 30 days + all good-first-issues',
+    opportunityLimit = null,
+    codeSkeletonLimit = null,
   } = options;
+
+  const limitInstruction = opportunityLimit
+    ? `Return at most ${opportunityLimit} total opportunities across all repositories. Pick the highest-signal items only.`
+    : 'Return a repository opportunity digest with UP TO 3 implementation opportunities per repo.';
+  const codeInstruction = codeSkeletonLimit
+    ? `Keep each code_skeleton under ${codeSkeletonLimit} characters.`
+    : 'For each opportunity include a real code_skeleton the developer can immediately use.';
 
   return `Today is ${new Date().toISOString().slice(0, 10)}.
 
@@ -59,8 +68,8 @@ ${JSON.stringify(repoData, null, 2)}
 === LATEST TECH NEWS (titles only) ===
 ${summarizeNews(news, newsLimit)}
 
-Analyze the above data. Return a repository opportunity digest with UP TO 3 implementation opportunities per repo.
-For each opportunity include a real code_skeleton the developer can immediately use.
+Analyze the above data. ${limitInstruction}
+${codeInstruction}
 Focus on good-first-issue, bug, help-wanted, and high-signal issues first.`;
 }
 
@@ -96,6 +105,8 @@ async function analyzeDigestWithModel(repoData, news) {
   const userMessage = buildUserMessage(trimmedRepoData, news, {
     newsLimit: 12,
     scanLabel: 'top prioritized issues per repo',
+    opportunityLimit: 8,
+    codeSkeletonLimit: 700,
   });
   if (process.env.GEMINI_API_KEY) {
     return analyzeWithGemini(userMessage);
@@ -129,7 +140,8 @@ async function analyzeWithGemini(userMessage) {
             { role: 'user', content: userMessage },
           ],
           temperature: 0.3,
-          max_tokens: 8192,
+          max_tokens: 12000,
+          response_format: { type: 'json_object' },
         }),
         signal: AbortSignal.timeout(120_000),
       }
@@ -138,7 +150,12 @@ async function analyzeWithGemini(userMessage) {
     if (res.ok) {
       const data = await res.json();
       const raw = data.choices?.[0]?.message?.content || '';
-      return parseJSON(raw);
+      try {
+        return parseJSON(raw);
+      } catch (error) {
+        console.warn(`  Gemini ${model} returned invalid JSON — trying fallback model/provider...`);
+        continue;
+      }
     }
 
     const errText = await res.text();
@@ -153,11 +170,11 @@ async function analyzeWithGemini(userMessage) {
 
   // All Gemini models returned 503 — try Groq
   if (process.env.GROQ_API_KEY) {
-    console.warn('  All Gemini models unavailable — falling back to Groq...');
+    console.warn('  Gemini did not produce a usable digest — falling back to Groq...');
     return analyzeWithGroq(userMessage);
   }
 
-  throw new Error('All Gemini models unavailable and GROQ_API_KEY is not set');
+  throw new Error('Gemini did not produce a usable digest and GROQ_API_KEY is not set');
 }
 
 async function analyzeWithGroq(userMessage) {
