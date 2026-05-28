@@ -36,7 +36,6 @@ async function sendTelegram(message) {
       body: JSON.stringify({
         chat_id: chatId,
         text: message,
-        parse_mode: 'Markdown',
       }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -64,29 +63,96 @@ async function sendNotification(message) {
 
 // ─── Message formatter ────────────────────────────────────────────────────────
 
-function buildDigestMessage(digest) {
-  const count = digest.contest_digest.length;
+const TELEGRAM_MESSAGE_LIMIT = 3900;
 
-  const items = digest.contest_digest
-    .map((item, i) => `${i + 1}. [${(item.effort || 'med').toUpperCase()}] ${item.opportunity}\n   → ${item.repo}`)
-    .join('\n');
+function cleanText(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncate(value, limit) {
+  const text = cleanText(value);
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trim()}…`;
+}
+
+function effortLabel(value) {
+  const effort = cleanText(value || 'medium').toLowerCase();
+  if (effort === 'low') return 'LOW';
+  if (effort === 'high') return 'HIGH';
+  return 'MED';
+}
+
+function formatOpportunity(item, index) {
+  const lines = [
+    `${index + 1}. [${effortLabel(item.effort)}] ${truncate(item.opportunity, 90)}`,
+    `Repo: ${cleanText(item.repo) || 'Unknown repo'}`,
+  ];
+
+  if (item.issue_url) {
+    lines.push(`Issue: ${cleanText(item.issue_url)}`);
+  }
+
+  if (item.why_it_qualifies) {
+    lines.push(`Why: ${truncate(item.why_it_qualifies, 180)}`);
+  }
+
+  if (item.suggested_action) {
+    lines.push(`Next: ${truncate(item.suggested_action, 220)}`);
+  }
+
+  if (item.clarity_tip) {
+    lines.push(`Check: ${truncate(item.clarity_tip, 100)}`);
+  }
+
+  return lines.join('\n');
+}
+
+function fitMessage(message, footer) {
+  if (message.length <= TELEGRAM_MESSAGE_LIMIT) return message;
+
+  const allowed = TELEGRAM_MESSAGE_LIMIT - footer.length - 2;
+  return `${message.slice(0, Math.max(0, allowed)).trim()}\n\n${footer}`;
+}
+
+function buildDigestMessage(digest) {
+  const opportunities = Array.isArray(digest.contest_digest)
+    ? digest.contest_digest
+    : [];
+  const count = opportunities.length;
+  const shown = opportunities.slice(0, 8);
+
+  const items = shown.length
+    ? shown.map(formatOpportunity).join('\n\n')
+    : 'No implementation opportunities were returned in this scan.';
 
   const news = Array.isArray(digest.tech_news_summary)
-    ? digest.tech_news_summary.slice(0, 3).map(n => `• ${n}`).join('\n')
-    : digest.tech_news_summary || '';
+    ? digest.tech_news_summary.slice(0, 4).map(n => `- ${truncate(n, 180)}`).join('\n')
+    : truncate(digest.tech_news_summary || '', 500);
 
-  return `*Repository Intelligence Digest* ${digest.date}
+  const hiddenCount = count - shown.length;
+  const hiddenLine = hiddenCount > 0
+    ? `\n\nShowing top ${shown.length}. ${hiddenCount} more are saved in the dashboard.`
+    : '';
 
-Found *${count} implementation opportunities*:
+  const footer = 'Open the dashboard for full code skeletons, issue context, and team notes.';
+  const message = `Repository Intelligence Digest
+Date: ${cleanText(digest.date) || new Date().toISOString().slice(0, 10)}
+Opportunities found: ${count}
 
-${items}
+Top opportunities
+${items}${hiddenLine}
 
-📌 *Plan:* ${digest.quick_plan}
+Execution plan
+${truncate(digest.quick_plan, 500)}
 
-📰 *Signal summary:*
-${news}
+Signal summary
+${news || '- No news summary returned.'}
 
-Open the dashboard for code skeletons, issue context, and team notes.`;
+${footer}`;
+
+  return fitMessage(message, 'Message shortened. Open the dashboard for the full digest.');
 }
 // ─── Telegram command listener (long-polling) ────────────────────────────────
 // Calls getUpdates in a loop. When it sees /scan from the authorized chatId,
