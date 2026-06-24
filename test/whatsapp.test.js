@@ -10,6 +10,7 @@ const {
   buildDigestMessages,
   listTelegramSubscribers,
   normalizeCommand,
+  parseScanMode,
   subscribeTelegramChat,
   unsubscribeTelegramChat,
 } = require('../src/whatsapp');
@@ -130,4 +131,11 @@ test('normalizeCommand accepts slash, plain, and bot-addressed commands', () => 
   assert.equal(normalizeCommand('start'), 'start');
   assert.equal(normalizeCommand('/status@dan_sentinel_bot'), 'status');
   assert.equal(normalizeCommand('/scan now'), 'scan');
+});
+
+test('parseScanMode recognizes admin scan modes', () => {
+  assert.equal(parseScanMode('/scan'), 'default');
+  assert.equal(parseScanMode('/scan all'), 'all');
+  assert.equal(parseScanMode('/scan good-first'), 'goodfirst');
+  assert.equal(parseScanMode('/scan medium'), 'medium');
 });

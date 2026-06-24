@@ -130,7 +130,10 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 | `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
 | `/status` | Anyone | Confirms the bot is running |
 | `/help` | Anyone | Shows available commands |
-| `/scan` | Admin chat only | Runs a scan immediately |
+| `/scan` | Admin chat only | Runs the normal top-priority scan immediately |
+| `/scan all` | Admin chat only | Scans a broader set of open issues |
+| `/scan goodfirst` | Admin chat only | Focuses on good-first/BitcoinDevs issues |
+| `/scan medium` | Admin chat only | Focuses on medium-effort implementation issues |
 
 Set `TELEGRAM_BOT_TOKEN` to make the bot public. Set `TELEGRAM_CHAT_ID` to your admin chat id if you want `/scan` to be available only to you.
 

@@ -78,6 +78,22 @@ function normalizeCommand(text) {
   return first.replace(/^\/+/, '').split('@')[0];
 }
 
+function parseScanMode(text) {
+  const parts = String(text || '').trim().toLowerCase().split(/\s+/).slice(1);
+  const mode = parts[0] || 'default';
+  if (mode === 'all' || mode === 'everything') return 'all';
+  if (mode === 'goodfirst' || mode === 'good-first' || mode === 'good_first' || mode === 'good') return 'goodfirst';
+  if (mode === 'medium' || mode === 'med') return 'medium';
+  return 'default';
+}
+
+function scanModeLabel(mode) {
+  if (mode === 'all') return 'all open issues';
+  if (mode === 'goodfirst') return 'good first issues';
+  if (mode === 'medium') return 'medium-effort issues';
+  return 'top prioritized issues';
+}
+
 async function listTelegramSubscribers() {
   const subscribers = await readSubscribers().catch(() => []);
   const ids = subscribers
@@ -176,7 +192,7 @@ async function setTelegramCommands() {
           { command: 'stop', description: 'Unsubscribe from daily updates' },
           { command: 'status', description: 'Check whether the bot is running' },
           { command: 'help', description: 'Show available commands' },
-          { command: 'scan', description: 'Run a scan now, admin only' },
+          { command: 'scan', description: 'Run scan: /scan all, /scan goodfirst, /scan medium' },
         ],
       }),
       signal: AbortSignal.timeout(15_000),
@@ -379,9 +395,14 @@ async function listenForCommands(onScan) {
             await sendTelegramToChat(chatId, 'You are subscribed for daily updates. Manual scans are only available to the bot admin.');
             continue;
           }
-          await sendTelegramToChat(chatId, 'Got it — starting scan now...');
+          const scanMode = parseScanMode(msg.text);
+          await sendTelegramToChat(chatId, `Got it — starting ${scanModeLabel(scanMode)} scan now...`);
           try {
-            await onScan();
+            await onScan({
+              trigger: `telegram-${scanMode}`,
+              scanMode,
+              dedupe: false,
+            });
           } catch (e) {
             await sendTelegramToChat(chatId, `Scan failed: ${e.message}`);
           }
@@ -391,7 +412,7 @@ async function listenForCommands(onScan) {
             : 'Bot is running. You will receive daily updates if subscribed. Send /start to subscribe or /stop to unsubscribe.');
         } else if (command === 'help') {
           await sendTelegramToChat(chatId, isAdminChat(chatId)
-            ? 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - run a scan now'
+            ? 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues'
             : 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot');
         }
       }
@@ -417,4 +438,5 @@ module.exports = {
   sendTelegramToChat,
   setTelegramCommands,
   normalizeCommand,
+  parseScanMode,
 };

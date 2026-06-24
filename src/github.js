@@ -211,11 +211,13 @@ function shape(issue) {
 async function scanRepos(repos = [], options = {}) {
   const results = [];
   const seedIssuesByRepo = options.seedIssuesByRepo || {};
+  const mode = options.mode || 'prioritized';
 
   for (const repo of repos) {
     console.log(`  Scanning ${repo}...`);
     try {
       const result = await scanRepo(repo, {
+        mode,
         seedIssues: seedIssuesByRepo[repo] || [],
       });
       console.log(`    → ${result.issues.length} issues (${result.labelSummary})`);

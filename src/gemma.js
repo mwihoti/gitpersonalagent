@@ -51,6 +51,7 @@ function buildUserMessage(repoData, news, options = {}) {
     scanLabel = 'last 30 days + all good-first-issues',
     opportunityLimit = null,
     codeSkeletonLimit = null,
+    scanFocus = '',
   } = options;
 
   const limitInstruction = opportunityLimit
@@ -70,6 +71,7 @@ ${summarizeNews(news, newsLimit)}
 
 Analyze the above data. ${limitInstruction}
 ${codeInstruction}
+${scanFocus ? `${scanFocus}\n` : ''}
 Focus on good-first-issue, bug, help-wanted, and high-signal issues first.`;
 }
 
@@ -97,17 +99,25 @@ function trimForCloud(repoData, options = {}) {
 
 // Fallback chain (cloud): gemini-2.5-flash-lite → gemini-2.5-flash → Groq.
 // Falls back to local Ollama when no cloud keys are set.
-async function analyzeDigestWithModel(repoData, news) {
+async function analyzeDigestWithModel(repoData, news, options = {}) {
   const digestMode = process.env.DIGEST_MODE === 'weekly' ? 'weekly' : 'daily';
+  const scanMode = options.scanMode || 'default';
+  const focusByMode = {
+    all: 'User requested all issues: cover a broader set of open issues, not only the easiest ones. Keep ranking by actionability.',
+    goodfirst: 'User requested good first issues: only recommend issues labeled good first issue or sourced from BitcoinDevs.',
+    medium: 'User requested medium effort: prioritize medium-effort implementation work, avoid tiny copy-only fixes and avoid large ambiguous rewrites.',
+    default: '',
+  };
   const trimmedRepoData = trimForCloud(repoData, {
-    issuesPerRepo: digestMode === 'weekly' ? 6 : 4,
+    issuesPerRepo: options.issuesPerRepo || (digestMode === 'weekly' ? 6 : 4),
     bodyChars: 120,
   });
   const userMessage = buildUserMessage(trimmedRepoData, news, {
     newsLimit: digestMode === 'weekly' ? 20 : 12,
-    scanLabel: digestMode === 'weekly' ? 'weekly top prioritized issues per repo' : 'top prioritized issues per repo',
-    opportunityLimit: digestMode === 'weekly' ? 12 : 8,
+    scanLabel: options.scanLabel || (digestMode === 'weekly' ? 'weekly top prioritized issues per repo' : 'top prioritized issues per repo'),
+    opportunityLimit: options.opportunityLimit || (digestMode === 'weekly' ? 12 : 8),
     codeSkeletonLimit: 700,
+    scanFocus: focusByMode[scanMode] || '',
   });
 
   try {
@@ -123,13 +133,19 @@ async function analyzeDigestWithModel(repoData, news) {
 
   if (!process.env.GEMINI_API_KEY && !process.env.GROQ_API_KEY) {
     try {
-      return await analyzeWithOllama(buildUserMessage(repoData, news));
+      return await analyzeWithOllama(buildUserMessage(repoData, news, {
+        scanLabel: options.scanLabel,
+        opportunityLimit: options.opportunityLimit,
+        scanFocus: focusByMode[scanMode] || '',
+      }));
     } catch (error) {
       console.warn(`  Ollama analysis failed, using deterministic fallback: ${error.message}`);
     }
   }
 
-  return buildDeterministicDigest(repoData, news);
+  return buildDeterministicDigest(repoData, news, {
+    opportunityLimit: options.opportunityLimit,
+  });
 }
 
 // Try each Gemini model in order; on 503 move to the next.
@@ -417,7 +433,8 @@ function inferEffort(issue) {
   return 'high';
 }
 
-function buildDeterministicDigest(repoData, news) {
+function buildDeterministicDigest(repoData, news, options = {}) {
+  const limit = Number(options.opportunityLimit || 8);
   const issues = repoData.flatMap(repo => (repo.issues || []).map(issue => ({
     ...issue,
     repo: repo.repo,
@@ -425,7 +442,7 @@ function buildDeterministicDigest(repoData, news) {
     const scoreDiff = Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0);
     if (scoreDiff !== 0) return scoreDiff;
     return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
-  }).slice(0, 8);
+  }).slice(0, Number.isFinite(limit) && limit > 0 ? limit : 8);
 
   return {
     date: new Date().toISOString().slice(0, 10),

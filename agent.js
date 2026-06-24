@@ -4,9 +4,9 @@ const { runScan } = require('./src/run-scan');
 const { listenForCommands } = require('./src/whatsapp');
 const config = require('./src/config');
 
-async function run() {
+async function run(options = {}) {
   try {
-    return await runScan();
+    return await runScan(options);
   } catch (err) {
     console.error('\nAgent error:', err.message);
     process.exitCode = 1;

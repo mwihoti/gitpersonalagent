@@ -53,17 +53,22 @@ test('runScan reuses the in-flight scan instead of starting a second one', async
   let scanCalls = 0;
   let saveCalls = 0;
   let notifyCalls = 0;
+  let scanOptions = null;
+  let analysisOptions = null;
 
   const { runScan } = await loadRunScanWithStubs(t, {
     github: {
-      scanRepos: async () => {
+      scanRepos: async (_repos, options) => {
         scanCalls += 1;
+        scanOptions = options;
         await new Promise(resolve => setTimeout(resolve, 40));
         return [{ issues: [{ number: 1 }], repo: 'owner/repo' }];
       },
     },
     gemma: {
-      analyzeWithGemma: async () => ({
+      analyzeWithGemma: async (_repoData, _news, options) => {
+        analysisOptions = options;
+        return ({
         date: '2026-05-16',
         contest_digest: [{
           opportunity: 'Ship fix',
@@ -78,7 +83,8 @@ test('runScan reuses the in-flight scan instead of starting a second one', async
         }],
         quick_plan: 'Do the thing',
         tech_news_summary: ['news'],
-      }),
+      });
+      },
     },
     news: {
       fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }),
@@ -110,8 +116,60 @@ test('runScan reuses the in-flight scan instead of starting a second one', async
   ]);
 
   assert.equal(scanCalls, 1);
+  assert.equal(scanOptions.mode, 'prioritized');
+  assert.equal(analysisOptions.opportunityLimit, 8);
   assert.equal(saveCalls, 1);
   assert.equal(notifyCalls, 1);
   assert.equal(first.digest.contest_digest.length, 1);
   assert.deepEqual([first.reused, second.reused].sort(), [false, true]);
+});
+
+test('runScan broadens GitHub and model limits for all scan mode', async t => {
+  let scanOptions = null;
+  let analysisOptions = null;
+
+  const { runScan } = await loadRunScanWithStubs(t, {
+    github: {
+      scanRepos: async (_repos, options) => {
+        scanOptions = options;
+        return [{ issues: [{ number: 1 }], repo: 'owner/repo' }];
+      },
+    },
+    gemma: {
+      analyzeWithGemma: async (_repoData, _news, options) => {
+        analysisOptions = options;
+        return {
+          date: '2026-05-16',
+          contest_digest: [],
+          quick_plan: 'Do the thing',
+          tech_news_summary: ['news'],
+        };
+      },
+    },
+    news: {
+      fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }),
+    },
+    airtable: {
+      filterUnchangedDigest: async digest => digest,
+      saveDigest: async () => {},
+    },
+    repositories: {
+      getScanTargets: async () => ({
+        source: 'watchlist',
+        repos: ['owner/repo'],
+        issues: [],
+      }),
+    },
+    whatsapp: {
+      sendNotification: async () => {},
+      buildDigestMessages: () => ['digest'],
+    },
+  });
+
+  await runScan({ scanMode: 'all', dedupe: false });
+
+  assert.equal(scanOptions.mode, 'all-open');
+  assert.equal(analysisOptions.scanMode, 'all');
+  assert.equal(analysisOptions.opportunityLimit, 24);
+  assert.equal(analysisOptions.issuesPerRepo, 20);
 });
