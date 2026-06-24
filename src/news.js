@@ -1,6 +1,5 @@
 'use strict';
 const config = require('./config');
-const { getScanRepositories } = require('./repositories');
 
 // ─── RSS parser (handles both RSS 2.0 and Atom) ───────────────────────────────
 
@@ -116,11 +115,10 @@ async function fetchHackerNews() {
 
 // ─── GitHub Releases ──────────────────────────────────────────────────────────
 
-async function fetchGitHubReleases() {
+async function fetchGitHubReleases(repos = []) {
   const headers = { Accept: 'application/vnd.github+json' };
   if (config.github.token) headers.Authorization = `Bearer ${config.github.token}`;
   const results = [];
-  const repos = await getScanRepositories();
   for (const repo of repos) {
     try {
       const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=2`, { headers, signal: AbortSignal.timeout(10_000) });
@@ -142,12 +140,13 @@ async function fetchGitHubReleases() {
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-async function fetchNews() {
+async function fetchNews(options = {}) {
   console.log('  Fetching tech news...');
+  const repos = options.repos || [];
 
   const [hn, releases, ...rssFeeds] = await Promise.all([
     fetchHackerNews(),
-    fetchGitHubReleases(),
+    fetchGitHubReleases(repos),
 
     // General tech & startup
     fetchRSS('TechCrunch',    'https://techcrunch.com/feed/', 4),

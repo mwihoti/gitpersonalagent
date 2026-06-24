@@ -27,6 +27,7 @@ const els = {
   detailEmpty: document.getElementById('detail-empty'),
   detailForm: document.getElementById('detail-form'),
   detailRepo: document.getElementById('detail-repo'),
+  detailSource: document.getElementById('detail-source'),
   detailTitle: document.getElementById('detail-title'),
   detailIssueLink: document.getElementById('detail-issue-link'),
   detailStatus: document.getElementById('detail-status'),
@@ -102,7 +103,7 @@ function normalizeText(value) {
 
 function getVisibleOpportunities() {
   if (!state.repositories.length) {
-    return [];
+    return state.opportunities;
   }
 
   const watchedRepos = new Set(state.repositories.map(item => normalizeText(item.repo)));
@@ -138,13 +139,13 @@ function renderHealth(payload) {
   const duration = typeof lastRun.durationMs === 'number'
     ? `${Math.round(lastRun.durationMs / 100) / 10}s`
     : 'unknown duration';
-  els.lastRunSummary.textContent = `${lastRun.status} via ${lastRun.trigger} on ${new Date(lastRun.startedAt).toLocaleString()} • ${lastRun.opportunities || 0} opportunities • ${duration}`;
+  els.lastRunSummary.textContent = `${lastRun.status} via ${lastRun.trigger} on ${new Date(lastRun.startedAt).toLocaleString()} • ${lastRun.opportunities || 0} opportunities • ${duration} • source ${lastRun.discoverySource || 'watchlist'}`;
 
   els.recentRunsList.innerHTML = recentRuns.map(run => `
     <article class="watchlist-item">
       <div>
         <strong>${escapeHtml(String(run.status || 'unknown').toUpperCase())} • ${escapeHtml(run.trigger || 'unknown')}</strong>
-        <p>${escapeHtml(new Date(run.startedAt).toLocaleString())} • repos ${run.repositories || 0} • issues ${run.totalIssues || 0} • opportunities ${run.opportunities || 0}</p>
+        <p>${escapeHtml(new Date(run.startedAt).toLocaleString())} • repos ${run.repositories || 0} • issues ${run.totalIssues || 0} • opportunities ${run.opportunities || 0} • deduped ${run.dedupedOpportunities || 0} • source ${escapeHtml(run.discoverySource || 'watchlist')}</p>
       </div>
       <div class="watchlist-actions">
         ${createTag(`${Math.round((run.durationMs || 0) / 100) / 10}s`)}
@@ -207,7 +208,7 @@ function renderList() {
     els.seeMoreButton.disabled = true;
     els.list.innerHTML = state.repositories.length
       ? '<div class="detail-empty">No opportunities match the current filters.</div>'
-      : '<div class="detail-empty">Add a repository to the watchlist and run a scan to populate the workbench.</div>';
+      : '<div class="detail-empty">Run a scan to populate the workbench from BitcoinDevs or add repositories to the watchlist.</div>';
     showEmptyState();
     return;
   }
@@ -239,6 +240,8 @@ function renderList() {
         ${createTag(item.status, `status-${statusClass(item.status)}`)}
         ${createTag(item.priority, `priority-${statusClass(item.priority)}`)}
         ${createTag(item.effort || 'medium')}
+        ${item.source ? createTag(`Source: ${escapeHtml(item.source)}`) : ''}
+        ${item.score ? createTag(`Score: ${escapeHtml(item.score)}`) : ''}
       </div>
       <div class="list-footer">
         ${item.owner ? createTag(`Owner: ${escapeHtml(item.owner)}`) : ''}
@@ -272,6 +275,11 @@ function selectOpportunity(id) {
   els.detailEmpty.classList.add('hidden');
   els.detailForm.classList.remove('hidden');
   els.detailRepo.textContent = item.repo || 'Unassigned repo';
+  els.detailSource.textContent = [
+    item.source ? `Source ${item.source}` : '',
+    item.score ? `Score ${item.score}` : '',
+    item.issueUpdatedAt ? `Issue updated ${new Date(item.issueUpdatedAt).toLocaleString()}` : '',
+  ].filter(Boolean).join(' • ');
   els.detailTitle.textContent = item.opportunity || 'Untitled opportunity';
   els.detailIssueLink.href = item.issueUrl || '#';
   els.detailIssueLink.style.visibility = item.issueUrl ? 'visible' : 'hidden';

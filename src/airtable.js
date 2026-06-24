@@ -96,7 +96,10 @@ async function normalizeFieldsForAirtable(fields) {
 
   for (const [name, value] of Object.entries(fields)) {
     const field = fieldMap.get(name);
-    if (!field) continue;
+    if (!field) {
+      delete normalized[name];
+      continue;
+    }
 
     if ((field.type === 'singleSelect' || field.type === 'multipleSelects') && value) {
       const mapped = normalizeChoiceValue(value, field.options?.choices || []);
@@ -132,6 +135,10 @@ function normalizeRecord(id, fields = {}) {
     whyItMatters: fields['Why It Matters'] || '',
     clarityTip: fields['Clarity Tip'] || '',
     codeSkeleton: fields['Code Skeleton'] || '',
+    source: fields.Source || '',
+    sourceUrl: fields['Source URL'] || '',
+    issueUpdatedAt: fields['Issue Updated At'] || '',
+    score: fields.Score || 0,
     lastUpdated: fields['Last Updated'] || '',
   };
 }
@@ -270,6 +277,10 @@ async function listOpportunities() {
         'Why It Matters': item.whyItMatters,
         'Clarity Tip': item.clarityTip,
         'Code Skeleton': item.codeSkeleton,
+        Source: item.source,
+        'Source URL': item.sourceUrl,
+        'Issue Updated At': item.issueUpdatedAt,
+        Score: item.score,
         'Last Updated': item.lastUpdated,
       }));
       await syncLocalRecords(snapshot);
@@ -286,6 +297,30 @@ async function listOpportunities() {
   return {
     opportunities: sortRecords(localRecords),
     storage: 'local',
+  };
+}
+
+async function filterUnchangedDigest(digest) {
+  const rows = await readLocalRecords().catch(() => []);
+  const seen = new Map();
+  for (const row of rows) {
+    const issueUrl = String(row['Issue URL'] || '').trim().toLowerCase();
+    if (!issueUrl) continue;
+    seen.set(issueUrl, String(row['Issue Updated At'] || '').trim());
+  }
+
+  const contestDigest = (digest.contest_digest || []).filter(item => {
+    const issueUrl = String(item.issue_url || '').trim().toLowerCase();
+    if (!issueUrl || !seen.has(issueUrl)) return true;
+    const previousUpdatedAt = seen.get(issueUrl);
+    const currentUpdatedAt = String(item.issue_updated_at || '').trim();
+    return currentUpdatedAt && previousUpdatedAt !== currentUpdatedAt;
+  });
+
+  return {
+    ...digest,
+    contest_digest: contestDigest,
+    deduped_opportunities: (digest.contest_digest || []).length - contestDigest.length,
   };
 }
 
@@ -356,6 +391,10 @@ async function saveDigest(digest) {
     'Issue URL': item.issue_url || '',
     'Code Skeleton': item.code_skeleton || '',
     'Why It Matters': item.why_it_matters,
+    Source: item.source || '',
+    'Source URL': item.source_url || '',
+    'Issue Updated At': item.issue_updated_at || '',
+    Score: item.score || 0,
     Effort: item.effort || 'medium',
     Priority: derivePriority(item),
     Status: 'New',
@@ -398,6 +437,7 @@ async function saveDigest(digest) {
 
 module.exports = {
   saveDigest,
+  filterUnchangedDigest,
   listOpportunities,
   updateOpportunity,
   isAirtableConfigured,

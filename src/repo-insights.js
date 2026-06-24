@@ -250,6 +250,21 @@ function buildIssueFitScore(issue, comments = []) {
     reasons.push('the request likely needs deeper design work before coding starts');
   }
 
+  if (issue.source === 'bitcoindevs') {
+    score += 12;
+    reasons.push('BitcoinDevs curated this as an open-source contribution candidate');
+  }
+
+  if (issue.languagePreferred === false) {
+    score -= 10;
+    reasons.push(`repo language ${issue.repositoryLanguage || 'unknown'} is outside the preferred language filter`);
+  }
+
+  if (bodyLength < 40 && commentsCount === 0) {
+    score -= 8;
+    reasons.push('the issue is light on detail and may need clarification before coding');
+  }
+
   if (/note: please don't just throw your llm/i.test(text)) {
     score -= 6;
     reasons.push('the issue explicitly warns that deeper human investigation is required');

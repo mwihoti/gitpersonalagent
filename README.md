@@ -116,6 +116,26 @@ Runs at 8am Nairobi time (Africa/Nairobi) every day.
 
 Scheduled scans use the dashboard watchlist first. If the watchlist is empty, the agent falls back to the BitcoinDevs good-first-issues page and scans the GitHub repositories linked there.
 
+### 7. Run the public Telegram bot
+
+```bash
+node agent.js --bot
+```
+
+Bot mode runs the daily scheduler and listens for Telegram commands:
+
+| Command | Who can use it | What it does |
+|---|---|---|
+| `/start` or `/subscribe` | Anyone | Subscribes that Telegram chat to daily digest notifications |
+| `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
+| `/status` | Anyone | Confirms the bot is running |
+| `/help` | Anyone | Shows available commands |
+| `/scan` | Admin chat only | Runs a scan immediately |
+
+Set `TELEGRAM_BOT_TOKEN` to make the bot public. Set `TELEGRAM_CHAT_ID` to your admin chat id if you want `/scan` to be available only to you.
+
+Subscribed chats are stored in `data/telegram-subscribers.json` locally, or under `/tmp/danagent-data` on Vercel. For production public subscriptions, run bot mode on a persistent worker such as Railway, Render, or a VPS, or set `DAN_AGENT_DATA_DIR` to durable storage.
+
 ---
 
 ## Configuration
@@ -151,6 +171,10 @@ SCAN_SCHEDULE=0 8 * * *
 BITCOINDEVS_ISSUES_URL=https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue
 BITCOINDEVS_MAX_REPOS=12
 BITCOINDEVS_DISCOVERY=true
+PREFERRED_LANGUAGES=Rust,Python,TypeScript
+
+# Weekly workflow sets this automatically
+DIGEST_MODE=daily
 
 # Protect dashboard APIs and manual scans
 DAN_AGENT_API_KEY=replace_with_a_long_random_string
@@ -180,6 +204,7 @@ Manage repositories from the dashboard:
 3. Use `Run scan now` or let the daily schedule use the saved watchlist
 
 If no repositories are saved, scheduled scans discover repositories from BitcoinDevs good-first-issues instead.
+Those discoveries are persisted locally, exact BitcoinDevs issue URLs are scanned first, and each dashboard opportunity shows its source and local fit score.
 
 ---
 

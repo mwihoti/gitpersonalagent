@@ -1,5 +1,13 @@
 'use strict';
+const fs = require('fs/promises');
+const path = require('path');
 const config = require('./config');
+
+const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
+  ? path.join('/tmp', 'danagent-data')
+  : path.join(__dirname, '..', 'data'));
+const SUBSCRIBERS_FILE = path.join(LOCAL_DATA_DIR, 'telegram-subscribers.json');
+let subscriberWriteQueue = Promise.resolve();
 
 // ─── WhatsApp via CallMeBot ───────────────────────────────────────────────────
 
@@ -24,8 +32,102 @@ async function sendWhatsApp(message) {
 
 // ─── Telegram ─────────────────────────────────────────────────────────────────
 
-async function sendTelegram(message) {
-  const { botToken, chatId } = config.telegram;
+async function ensureSubscriberStore() {
+  await fs.mkdir(LOCAL_DATA_DIR, { recursive: true });
+  try {
+    await fs.access(SUBSCRIBERS_FILE);
+  } catch {
+    await fs.writeFile(SUBSCRIBERS_FILE, '[]\n', 'utf8');
+  }
+}
+
+async function readSubscribers() {
+  await ensureSubscriberStore();
+  const raw = await fs.readFile(SUBSCRIBERS_FILE, 'utf8');
+  return JSON.parse(raw);
+}
+
+async function writeSubscribers(subscribers) {
+  await ensureSubscriberStore();
+  await fs.writeFile(SUBSCRIBERS_FILE, `${JSON.stringify(subscribers, null, 2)}\n`, 'utf8');
+}
+
+function serializeSubscriberWrite(task) {
+  const next = subscriberWriteQueue.then(task, task);
+  subscriberWriteQueue = next.catch(() => {});
+  return next;
+}
+
+function normalizeChatId(chatId) {
+  return String(chatId || '').trim();
+}
+
+function adminChatId() {
+  return normalizeChatId(config.telegram.chatId);
+}
+
+function isAdminChat(chatId) {
+  const admin = adminChatId();
+  return Boolean(admin && normalizeChatId(chatId) === admin);
+}
+
+function normalizeCommand(text) {
+  const normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return '';
+  const first = normalized.split(/\s+/)[0];
+  return first.replace(/^\/+/, '').split('@')[0];
+}
+
+async function listTelegramSubscribers() {
+  const subscribers = await readSubscribers().catch(() => []);
+  const ids = subscribers
+    .map(item => normalizeChatId(item.chatId))
+    .filter(Boolean);
+  const admin = adminChatId();
+  return [...new Set([admin, ...ids].filter(Boolean))];
+}
+
+async function subscribeTelegramChat(chat) {
+  const chatId = normalizeChatId(chat && chat.id);
+  if (!chatId) throw new Error('Cannot subscribe Telegram chat without an id');
+
+  return serializeSubscriberWrite(async () => {
+    const subscribers = await readSubscribers();
+    const existing = subscribers.find(item => normalizeChatId(item.chatId) === chatId);
+    const record = {
+      chatId,
+      type: chat.type || '',
+      title: chat.title || '',
+      username: chat.username || '',
+      firstName: chat.first_name || '',
+      lastName: chat.last_name || '',
+      subscribedAt: existing?.subscribedAt || new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    const next = existing
+      ? subscribers.map(item => normalizeChatId(item.chatId) === chatId ? { ...item, ...record } : item)
+      : [...subscribers, record];
+
+    await writeSubscribers(next);
+    return record;
+  });
+}
+
+async function unsubscribeTelegramChat(chatId) {
+  const normalized = normalizeChatId(chatId);
+  if (!normalized) return false;
+
+  return serializeSubscriberWrite(async () => {
+    const subscribers = await readSubscribers();
+    const next = subscribers.filter(item => normalizeChatId(item.chatId) !== normalized);
+    await writeSubscribers(next);
+    return next.length !== subscribers.length;
+  });
+}
+
+async function sendTelegramToChat(chatId, message) {
+  const { botToken } = config.telegram;
   if (!botToken || !chatId) return false;
 
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
@@ -52,13 +154,55 @@ async function sendTelegram(message) {
   }
 }
 
+async function sendTelegram(message) {
+  const chatIds = await listTelegramSubscribers();
+  if (!chatIds.length) return false;
+
+  const results = await Promise.all(chatIds.map(chatId => sendTelegramToChat(chatId, message)));
+  return results.some(Boolean);
+}
+
+async function setTelegramCommands() {
+  const { botToken } = config.telegram;
+  if (!botToken) return false;
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commands: [
+          { command: 'start', description: 'Subscribe to daily updates' },
+          { command: 'stop', description: 'Unsubscribe from daily updates' },
+          { command: 'status', description: 'Check whether the bot is running' },
+          { command: 'help', description: 'Show available commands' },
+          { command: 'scan', description: 'Run a scan now, admin only' },
+        ],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    return res.ok;
+  } catch (e) {
+    console.warn(`  Telegram command menu skipped: ${e.message}`);
+    return false;
+  }
+}
+
 // ─── Unified send (Telegram first, WhatsApp as fallback) ─────────────────────
 
 async function sendNotification(message) {
-  const sent = await sendTelegram(message);
-  if (!sent) {
-    await sendWhatsApp(message);
+  const messages = Array.isArray(message) ? message : [message];
+  let sentAny = false;
+
+  for (const item of messages) {
+    const sent = await sendTelegram(item);
+    sentAny = sentAny || sent;
+    if (!sent) {
+      await sendWhatsApp(item);
+    }
   }
+
+  return sentAny;
 }
 
 // ─── Message formatter ────────────────────────────────────────────────────────
@@ -154,20 +298,61 @@ ${footer}`;
 
   return fitMessage(message, 'Message shortened. Open the dashboard for the full digest.');
 }
+
+function buildOpportunityMessage(item, index, total) {
+  const footer = 'Open the dashboard for the code skeleton and work log.';
+  const message = `Opportunity ${index + 1} of ${total}
+[${effortLabel(item.effort)}] ${truncate(item.opportunity, 120)}
+
+Repo: ${cleanText(item.repo) || 'Unknown repo'}
+Issue: ${cleanText(item.issue_url) || 'No issue URL'}
+Source: ${cleanText(item.source) || 'scan'}
+Score: ${Number(item.score || 0) || 'n/a'}
+
+Why
+${truncate(item.why_it_qualifies, 450)}
+
+Next
+${truncate(item.suggested_action, 550)}
+
+Check
+${truncate(item.clarity_tip, 180) || 'Run the relevant repository checks before opening a PR.'}
+
+${footer}`;
+
+  return fitMessage(message, 'Opportunity shortened. Open the dashboard for the full detail.');
+}
+
+function buildDigestMessages(digest) {
+  const detailLimit = Number(process.env.DIGEST_DETAIL_LIMIT || 8);
+  const opportunities = Array.isArray(digest.contest_digest)
+    ? digest.contest_digest.slice(0, Number.isFinite(detailLimit) && detailLimit > 0 ? detailLimit : 8)
+    : [];
+  return [
+    buildDigestMessage(digest),
+    ...opportunities.map((item, index) => buildOpportunityMessage(item, index, opportunities.length)),
+  ];
+}
 // ─── Telegram command listener (long-polling) ────────────────────────────────
 // Calls getUpdates in a loop. When it sees /scan from the authorized chatId,
 // calls onScan(). Safe to run alongside the cron scheduler.
 
 async function listenForCommands(onScan) {
-  const { botToken, chatId } = config.telegram;
-  if (!botToken || !chatId) {
+  const { botToken } = config.telegram;
+  if (!botToken) {
     console.warn('Telegram bot not configured — command listener disabled');
     return;
   }
 
   let offset = 0;
-  console.log(`Telegram bot listening for /scan in chat ${chatId}...`);
-  await sendTelegram('Bot started. Send /scan to trigger a scan, /status to check.');
+  const admin = adminChatId();
+  console.log(admin
+    ? `Telegram bot listening publicly. Admin scan chat: ${admin}`
+    : 'Telegram bot listening publicly. Set TELEGRAM_CHAT_ID to enable admin /scan.');
+  await setTelegramCommands();
+  if (admin) {
+    await sendTelegramToChat(admin, 'Bot started. Public users can send /start to subscribe. Admin can send /scan.');
+  }
 
   while (true) {
     try {
@@ -179,20 +364,35 @@ async function listenForCommands(onScan) {
       for (const update of result) {
         offset = update.update_id + 1;
         const msg = update.message;
-        if (!msg || String(msg.chat.id) !== String(chatId)) continue;
+        if (!msg || !msg.chat) continue;
 
-        const text = (msg.text || '').trim().toLowerCase();
-        if (text === '/scan' || text.startsWith('/scan ')) {
-          await sendTelegram('Got it — starting scan now...');
+        const command = normalizeCommand(msg.text);
+        const chatId = normalizeChatId(msg.chat.id);
+        if (command === 'start' || command === 'subscribe') {
+          await subscribeTelegramChat(msg.chat);
+          await sendTelegramToChat(chatId, 'You are subscribed. You will receive the daily Repository Intelligence Digest here. Send /stop to unsubscribe.');
+        } else if (command === 'stop' || command === 'unsubscribe') {
+          await unsubscribeTelegramChat(chatId);
+          await sendTelegramToChat(chatId, 'You are unsubscribed. Send /start any time to subscribe again.');
+        } else if (command === 'scan') {
+          if (!isAdminChat(chatId)) {
+            await sendTelegramToChat(chatId, 'You are subscribed for daily updates. Manual scans are only available to the bot admin.');
+            continue;
+          }
+          await sendTelegramToChat(chatId, 'Got it — starting scan now...');
           try {
             await onScan();
           } catch (e) {
-            await sendTelegram(`Scan failed: ${e.message}`);
+            await sendTelegramToChat(chatId, `Scan failed: ${e.message}`);
           }
-        } else if (text === '/status') {
-          await sendTelegram('Bot is running. Send /scan to trigger a scan.');
-        } else if (text === '/start' || text === '/help') {
-          await sendTelegram('Commands:\n/scan — run a scan now\n/status — check bot is alive');
+        } else if (command === 'status') {
+          await sendTelegramToChat(chatId, isAdminChat(chatId)
+            ? 'Bot is running. Send /scan to trigger a scan, or /stop to unsubscribe from digests.'
+            : 'Bot is running. You will receive daily updates if subscribed. Send /start to subscribe or /stop to unsubscribe.');
+        } else if (command === 'help') {
+          await sendTelegramToChat(chatId, isAdminChat(chatId)
+            ? 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - run a scan now'
+            : 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot');
         }
       }
     } catch (e) {
@@ -206,4 +406,15 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-module.exports = { sendNotification, buildDigestMessage, listenForCommands };
+module.exports = {
+  sendNotification,
+  buildDigestMessage,
+  buildDigestMessages,
+  listenForCommands,
+  listTelegramSubscribers,
+  subscribeTelegramChat,
+  unsubscribeTelegramChat,
+  sendTelegramToChat,
+  setTelegramCommands,
+  normalizeCommand,
+};

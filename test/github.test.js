@@ -40,3 +40,27 @@ test('fetchRepoDetails retries public repo lookup without auth after 401', async
   assert.ok(calls[0].Authorization);
   assert.equal(calls[1].Authorization, undefined);
 });
+
+test('scanRepos skips repositories that GitHub refuses instead of throwing', async t => {
+  process.env.GITHUB_TOKEN = 'bad-token';
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => ({
+    ok: false,
+    status: 403,
+    json: async () => ({ message: 'API rate limit exceeded' }),
+  });
+
+  t.after(() => {
+    global.fetch = originalFetch;
+    delete process.env.GITHUB_TOKEN;
+  });
+
+  const { scanRepos } = loadGithubModule();
+  const results = await scanRepos(['owner/repo']);
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].repo, 'owner/repo');
+  assert.equal(results[0].labelSummary, 'skipped');
+  assert.match(results[0].error, /GitHub repo lookup failed/);
+});

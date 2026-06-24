@@ -84,18 +84,23 @@ test('runScan reuses the in-flight scan instead of starting a second one', async
       fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }),
     },
     airtable: {
+      filterUnchangedDigest: async digest => digest,
       saveDigest: async () => {
         saveCalls += 1;
       },
     },
     repositories: {
-      getScanRepositories: async () => ['owner/repo'],
+      getScanTargets: async () => ({
+        source: 'watchlist',
+        repos: ['owner/repo'],
+        issues: [],
+      }),
     },
     whatsapp: {
       sendNotification: async () => {
         notifyCalls += 1;
       },
-      buildDigestMessage: () => 'digest',
+      buildDigestMessages: () => ['digest'],
     },
   });
 

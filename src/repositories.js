@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs/promises');
 const path = require('path');
-const { fetchBitcoinDevsRepositories } = require('./bitcoindevs');
+const { fetchBitcoinDevsIssues, saveBitcoinDevsDiscovery } = require('./bitcoindevs');
 const { assertRepositoryAccessible } = require('./github');
 
 const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
@@ -92,27 +92,45 @@ function isBitcoinDevsDiscoveryEnabled() {
 }
 
 async function getScanRepositories() {
+  const targets = await getScanTargets();
+  return targets.repos;
+}
+
+async function getScanTargets() {
   const repos = await listRepositories();
   const savedRepos = repos.map(entry => entry.repo);
   if (savedRepos.length || !isBitcoinDevsDiscoveryEnabled()) {
-    return savedRepos;
+    return {
+      source: savedRepos.length ? 'watchlist' : 'none',
+      sourceUrl: '',
+      repos: savedRepos,
+      issues: [],
+    };
   }
 
   try {
-    const discoveredRepos = await fetchBitcoinDevsRepositories();
-    if (discoveredRepos.length) {
-      console.log(`  Using ${discoveredRepos.length} BitcoinDevs good-first-issue repos as scan targets`);
+    const discovery = await fetchBitcoinDevsIssues();
+    const savedDiscovery = await saveBitcoinDevsDiscovery(discovery);
+    if (savedDiscovery.repos.length) {
+      console.log(`  Using ${savedDiscovery.repos.length} BitcoinDevs good-first-issue repos as scan targets`);
     }
-    return discoveredRepos;
+    return savedDiscovery;
   } catch (error) {
     console.warn(`  BitcoinDevs discovery skipped: ${error.message}`);
-    return [];
+    return {
+      source: 'none',
+      sourceUrl: '',
+      repos: [],
+      issues: [],
+      error: error.message,
+    };
   }
 }
 
 module.exports = {
   addRepository,
   getScanRepositories,
+  getScanTargets,
   listRepositories,
   normalizeRepo,
   removeRepository,

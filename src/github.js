@@ -3,6 +3,7 @@ const config = require('./config');
 const { buildIssueInsight, buildRepoOverview } = require('./repo-insights');
 
 const DAYS_BACK = 30; // general recent activity window
+let authDisabledForRun = false;
 
 function since(days = DAYS_BACK) {
   const d = new Date();
@@ -12,8 +13,15 @@ function since(days = DAYS_BACK) {
 
 function makeHeaders() {
   const headers = { Accept: 'application/vnd.github+json' };
-  if (config.github.token) headers.Authorization = `Bearer ${config.github.token}`;
+  if (config.github.token && !authDisabledForRun) headers.Authorization = `Bearer ${config.github.token}`;
   return headers;
+}
+
+function getPreferredLanguages() {
+  return String(process.env.PREFERRED_LANGUAGES || '')
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function shouldRetryWithoutAuth(res, usedAuth) {
@@ -29,10 +37,20 @@ async function githubRequest(url) {
     return first;
   }
 
-  console.warn(`  GitHub auth rejected (${first.status}) for ${url} — retrying without token`);
+  authDisabledForRun = true;
+  console.warn(`  GitHub auth rejected (${first.status}) for ${url} — disabling token for this process and retrying without token`);
   return fetch(url, {
     headers: { Accept: 'application/vnd.github+json' },
   });
+}
+
+async function getGitHubErrorMessage(res) {
+  try {
+    const body = await res.json();
+    return body.message ? `${res.status} ${body.message}` : String(res.status);
+  } catch {
+    return String(res.status);
+  }
 }
 
 // Recent issues updated in the last N days
@@ -103,6 +121,13 @@ async function fetchBugIssues(repo) {
   return data.filter(i => !i.pull_request);
 }
 
+async function fetchIssueByNumber(repo, number) {
+  const res = await githubRequest(`https://api.github.com/repos/${repo}/issues/${number}`);
+  if (!res.ok) return null;
+  const issue = await res.json();
+  return issue.pull_request ? null : issue;
+}
+
 async function fetchRecentPRActivity(repo) {
   const params = new URLSearchParams({
     state: 'open',
@@ -126,7 +151,7 @@ async function fetchRepoDetails(repo) {
   const res = await githubRequest(`https://api.github.com/repos/${repo}`);
 
   if (!res.ok) {
-    throw new Error(`GitHub repo lookup failed for ${repo}: ${res.status}`);
+    throw new Error(`GitHub repo lookup failed for ${repo}: ${await getGitHubErrorMessage(res)}`);
   }
 
   return res.json();
@@ -176,17 +201,38 @@ function shape(issue) {
     url: issue.html_url,
     comments: issue.comments,
     updatedAt: issue.updated_at,
+    source: issue.source || '',
+    sourceUrl: issue.sourceUrl || '',
+    sourcePublishedAt: issue.sourcePublishedAt || '',
+    repositoryLanguage: issue.repositoryLanguage || '',
   };
 }
 
-async function scanRepos(repos = []) {
+async function scanRepos(repos = [], options = {}) {
   const results = [];
+  const seedIssuesByRepo = options.seedIssuesByRepo || {};
 
   for (const repo of repos) {
     console.log(`  Scanning ${repo}...`);
-    const result = await scanRepo(repo);
-    console.log(`    → ${result.issues.length} issues (${result.labelSummary})`);
-    results.push(result);
+    try {
+      const result = await scanRepo(repo, {
+        seedIssues: seedIssuesByRepo[repo] || [],
+      });
+      console.log(`    → ${result.issues.length} issues (${result.labelSummary})`);
+      results.push(result);
+    } catch (error) {
+      console.warn(`    → skipped ${repo}: ${error.message}`);
+      results.push({
+        repo,
+        repoUrl: `https://github.com/${repo}`,
+        overview: `Skipped: ${error.message}`,
+        totalOpenIssues: 0,
+        issues: [],
+        recentPRs: [],
+        labelSummary: 'skipped',
+        error: error.message,
+      });
+    }
   }
 
   return results;
@@ -195,22 +241,48 @@ async function scanRepos(repos = []) {
 async function scanRepo(repo, options = {}) {
   const {
     mode = 'prioritized',
+    seedIssues = [],
   } = options;
 
-  const [repoDetails, recent, goodFirst, bugs, recentPRs, openIssues] = await Promise.all([
+  const [repoDetails, recent, goodFirst, bugs, recentPRs, openIssues, seeded] = await Promise.all([
     fetchRepoDetails(repo),
     fetchRecentIssues(repo),
     fetchGoodFirstIssues(repo),
     fetchBugIssues(repo),
     fetchRecentPRActivity(repo),
     mode === 'all-open' ? fetchOpenIssues(repo, 50) : Promise.resolve([]),
+    Promise.all(seedIssues.map(async seed => {
+      const issue = await fetchIssueByNumber(repo, seed.number);
+      if (!issue) return null;
+      return {
+        ...issue,
+        source: seed.source || 'bitcoindevs',
+        sourceUrl: seed.url || seed.sourceUrl || '',
+        sourcePublishedAt: seed.publishedAt || '',
+      };
+    })),
   ]);
+
+  const repositoryLanguage = repoDetails.language || '';
+  const preferredLanguages = getPreferredLanguages();
+  const languagePreferred = !preferredLanguages.length
+    || preferredLanguages.includes(String(repositoryLanguage).toLowerCase());
+  const decorateIssue = issue => ({
+    ...issue,
+    repositoryLanguage,
+    languagePreferred,
+  });
 
   const sourceIssues = mode === 'all-open'
     ? openIssues
-    : dedup([...goodFirst, ...bugs, ...recent]).slice(0, 20);
+    : dedup([
+      ...seeded.filter(Boolean),
+      ...goodFirst.map(issue => ({ ...issue, source: issue.source || 'github-label' })),
+      ...bugs.map(issue => ({ ...issue, source: issue.source || 'github-bug' })),
+      ...recent.map(issue => ({ ...issue, source: issue.source || 'github-recent' })),
+    ]).slice(0, 20);
 
-  const merged = dedup(sourceIssues).slice(0, 20);
+  const merged = dedup(sourceIssues).slice(0, 20).map(decorateIssue);
   const issues = await Promise.all(merged.map(async issue => {
     const comments = await fetchIssueComments(issue);
     return {
@@ -223,6 +295,7 @@ async function scanRepo(repo, options = {}) {
     return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
   }));
   const labelSummary = [
+    seedIssues.length ? `${seedIssues.length} BitcoinDevs` : '',
     goodFirst.length ? `${goodFirst.length} good-first` : '',
     bugs.length ? `${bugs.length} bugs` : '',
   ].filter(Boolean).join(', ');

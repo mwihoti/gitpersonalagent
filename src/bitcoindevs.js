@@ -1,7 +1,14 @@
 'use strict';
+const fs = require('fs/promises');
+const path = require('path');
 
 const DEFAULT_ISSUES_URL = 'https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue';
 const DEFAULT_MAX_REPOS = 12;
+const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
+  ? path.join('/tmp', 'danagent-data')
+  : path.join(__dirname, '..', 'data'));
+const DISCOVERY_FILE = path.join(LOCAL_DATA_DIR, 'bitcoindevs-discoveries.json');
+const DISCOVERY_LIMIT = 30;
 
 function getIssuesUrl() {
   return process.env.BITCOINDEVS_ISSUES_URL || DEFAULT_ISSUES_URL;
@@ -87,7 +94,36 @@ function repositoriesFromIssues(issues, limit = getMaxRepos()) {
   return repos;
 }
 
-async function fetchBitcoinDevsRepositories(options = {}) {
+async function ensureDiscoveryStore() {
+  await fs.mkdir(LOCAL_DATA_DIR, { recursive: true });
+  try {
+    await fs.access(DISCOVERY_FILE);
+  } catch {
+    await fs.writeFile(DISCOVERY_FILE, '[]\n', 'utf8');
+  }
+}
+
+async function readBitcoinDevsDiscoveries() {
+  await ensureDiscoveryStore();
+  const raw = await fs.readFile(DISCOVERY_FILE, 'utf8');
+  return JSON.parse(raw);
+}
+
+async function saveBitcoinDevsDiscovery(discovery) {
+  await ensureDiscoveryStore();
+  const existing = await readBitcoinDevsDiscoveries();
+  const next = [{
+    discoveredAt: discovery.discoveredAt || new Date().toISOString(),
+    source: 'bitcoindevs',
+    sourceUrl: discovery.sourceUrl || getIssuesUrl(),
+    issues: discovery.issues || [],
+    repos: discovery.repos || repositoriesFromIssues(discovery.issues || []),
+  }, ...existing].slice(0, DISCOVERY_LIMIT);
+  await fs.writeFile(DISCOVERY_FILE, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return next[0];
+}
+
+async function fetchBitcoinDevsIssues(options = {}) {
   const url = options.url || getIssuesUrl();
   const maxRepos = options.maxRepos || getMaxRepos();
   const res = await fetch(url, {
@@ -104,12 +140,28 @@ async function fetchBitcoinDevsRepositories(options = {}) {
 
   const html = await res.text();
   const issues = parseBitcoinDevsIssues(html);
-  return repositoriesFromIssues(issues, maxRepos);
+  const repos = repositoriesFromIssues(issues, maxRepos);
+  const repoSet = new Set(repos.map(repo => repo.toLowerCase()));
+  return {
+    discoveredAt: new Date().toISOString(),
+    source: 'bitcoindevs',
+    sourceUrl: url,
+    repos,
+    issues: issues.filter(issue => repoSet.has(issue.repo.toLowerCase())),
+  };
+}
+
+async function fetchBitcoinDevsRepositories(options = {}) {
+  const discovery = await fetchBitcoinDevsIssues(options);
+  return discovery.repos;
 }
 
 module.exports = {
   DEFAULT_ISSUES_URL,
+  fetchBitcoinDevsIssues,
   fetchBitcoinDevsRepositories,
   parseBitcoinDevsIssues,
+  readBitcoinDevsDiscoveries,
   repositoriesFromIssues,
+  saveBitcoinDevsDiscovery,
 };

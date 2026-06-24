@@ -98,23 +98,38 @@ function trimForCloud(repoData, options = {}) {
 // Fallback chain (cloud): gemini-2.5-flash-lite → gemini-2.5-flash → Groq.
 // Falls back to local Ollama when no cloud keys are set.
 async function analyzeDigestWithModel(repoData, news) {
+  const digestMode = process.env.DIGEST_MODE === 'weekly' ? 'weekly' : 'daily';
   const trimmedRepoData = trimForCloud(repoData, {
-    issuesPerRepo: 4,
+    issuesPerRepo: digestMode === 'weekly' ? 6 : 4,
     bodyChars: 120,
   });
   const userMessage = buildUserMessage(trimmedRepoData, news, {
-    newsLimit: 12,
-    scanLabel: 'top prioritized issues per repo',
-    opportunityLimit: 8,
+    newsLimit: digestMode === 'weekly' ? 20 : 12,
+    scanLabel: digestMode === 'weekly' ? 'weekly top prioritized issues per repo' : 'top prioritized issues per repo',
+    opportunityLimit: digestMode === 'weekly' ? 12 : 8,
     codeSkeletonLimit: 700,
   });
-  if (process.env.GEMINI_API_KEY) {
-    return analyzeWithGemini(userMessage);
+
+  try {
+    if (process.env.GEMINI_API_KEY) {
+      return analyzeWithGemini(userMessage);
+    }
+    if (process.env.GROQ_API_KEY) {
+      return analyzeWithGroq(userMessage);
+    }
+  } catch (error) {
+    console.warn(`  Model analysis failed, using deterministic fallback: ${error.message}`);
   }
-  if (process.env.GROQ_API_KEY) {
-    return analyzeWithGroq(userMessage);
+
+  if (!process.env.GEMINI_API_KEY && !process.env.GROQ_API_KEY) {
+    try {
+      return await analyzeWithOllama(buildUserMessage(repoData, news));
+    } catch (error) {
+      console.warn(`  Ollama analysis failed, using deterministic fallback: ${error.message}`);
+    }
   }
-  return analyzeWithOllama(buildUserMessage(repoData, news));
+
+  return buildDeterministicDigest(repoData, news);
 }
 
 // Try each Gemini model in order; on 503 move to the next.
@@ -346,6 +361,10 @@ function validateOpportunity(item, index) {
     clarity_tip: assertString(item.clarity_tip ?? '', `contest_digest[${index}].clarity_tip`, { allowEmpty: true, maxLength: 500 }),
     why_it_matters: assertString(item.why_it_matters, `contest_digest[${index}].why_it_matters`, { maxLength: 2000 }),
     effort,
+    source: assertString(item.source ?? '', `contest_digest[${index}].source`, { allowEmpty: true, maxLength: 100 }),
+    source_url: assertString(item.source_url ?? '', `contest_digest[${index}].source_url`, { allowEmpty: true, maxLength: 500 }),
+    issue_updated_at: assertString(item.issue_updated_at ?? '', `contest_digest[${index}].issue_updated_at`, { allowEmpty: true, maxLength: 50 }),
+    score: Number.isFinite(Number(item.score)) ? Number(item.score) : 0,
   };
 }
 
@@ -383,8 +402,59 @@ function validateDigest(payload) {
   };
 }
 
+function summarizeFallbackNews(news) {
+  return [
+    ...(news.githubReleases || []).map(item => item.title),
+    ...(news.hackerNews || []).map(item => item.title),
+    ...(news.rssFeeds || []).map(item => item.title),
+  ].filter(Boolean).slice(0, 5);
+}
+
+function inferEffort(issue) {
+  const score = Number(issue.issueFitScore || 0);
+  if (score >= 72) return 'low';
+  if (score >= 52) return 'medium';
+  return 'high';
+}
+
+function buildDeterministicDigest(repoData, news) {
+  const issues = repoData.flatMap(repo => (repo.issues || []).map(issue => ({
+    ...issue,
+    repo: repo.repo,
+  }))).sort((a, b) => {
+    const scoreDiff = Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+  }).slice(0, 8);
+
+  return {
+    date: new Date().toISOString().slice(0, 10),
+    contest_digest: issues.map(issue => ({
+      opportunity: issue.title,
+      repo: issue.repo,
+      issue_url: issue.url || '',
+      why_it_qualifies: issue.issueFitReason || 'Ranked by local issue labels, recency, discussion, and actionability signals.',
+      suggested_action: issue.expectationSummary || 'Read the issue, identify the smallest useful change, add validation, and open a narrow PR.',
+      code_skeleton: `// ${issue.repo}#${issue.number}\n// Start by locating the files related to: ${issue.title}\n// Add a focused test or documentation update before opening the PR.`,
+      clarity_tip: (issue.quickPlan || []).slice(-1)[0] || 'Run the repository test or lint command before opening a PR.',
+      why_it_matters: issue.conversationSummary || 'This keeps the contribution focused on a maintainer-visible issue.',
+      effort: inferEffort(issue),
+      source: issue.source || 'github',
+      source_url: issue.sourceUrl || '',
+      issue_updated_at: issue.updatedAt || '',
+      score: Number(issue.issueFitScore || 0),
+    })),
+    quick_plan: issues.length
+      ? 'Start with the highest-scoring low-effort issue, keep the first PR narrow, and use the issue thread to confirm expected behavior.'
+      : 'No actionable issues were found. Refresh discovery sources or add repositories to the watchlist.',
+    tech_news_summary: summarizeFallbackNews(news),
+    model_fallback: true,
+  };
+}
+
 module.exports = {
   analyzeWithGemma: analyzeDigestWithModel,
   analyzeDigestWithModel,
+  buildDeterministicDigest,
   validateDigest,
 };
