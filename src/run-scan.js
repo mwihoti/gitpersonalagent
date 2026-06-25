@@ -195,7 +195,19 @@ async function runScan(options = {}) {
       issuesPerRepo: scanConfig.issuesPerRepo,
     });
     const enrichedDigest = enrichDigestWithIssueMetadata(rawDigest, repoData);
-    const digest = dedupe ? await filterUnchangedDigest(enrichedDigest) : enrichedDigest;
+    const filteredDigest = dedupe ? await filterUnchangedDigest(enrichedDigest) : enrichedDigest;
+    const filteredCount = filteredDigest.contest_digest?.length || 0;
+    const originalCount = enrichedDigest.contest_digest?.length || 0;
+    const digest = dedupe && originalCount > 0 && filteredCount === 0
+      ? {
+        ...enrichedDigest,
+        deduped_opportunities: filteredDigest.deduped_opportunities || originalCount,
+        repeated_digest: true,
+      }
+      : filteredDigest;
+    if (digest.repeated_digest) {
+      logger.log('     All model opportunities were already seen; sending current best opportunities again');
+    }
     run.timingsMs.analysis = Date.now() - analysisStarted;
     const count = digest.contest_digest?.length || 0;
     run.opportunities = count;

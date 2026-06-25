@@ -173,3 +173,72 @@ test('runScan broadens GitHub and model limits for all scan mode', async t => {
   assert.equal(analysisOptions.opportunityLimit, 24);
   assert.equal(analysisOptions.issuesPerRepo, 20);
 });
+
+test('runScan sends current best opportunities when dedupe removes every item', async t => {
+  let savedDigest = null;
+  let notifiedMessages = null;
+
+  const { runScan } = await loadRunScanWithStubs(t, {
+    github: {
+      scanRepos: async () => [{
+        repo: 'owner/repo',
+        issues: [{
+          number: 1,
+          url: 'https://github.com/owner/repo/issues/1',
+          updatedAt: '2026-05-16T00:00:00Z',
+        }],
+      }],
+    },
+    gemma: {
+      analyzeWithGemma: async () => ({
+        date: '2026-05-16',
+        contest_digest: [{
+          opportunity: 'Ship fix',
+          repo: 'owner/repo',
+          issue_url: 'https://github.com/owner/repo/issues/1',
+          why_it_qualifies: 'good',
+          suggested_action: 'do work',
+          code_skeleton: '// code',
+          clarity_tip: 'npm test',
+          why_it_matters: 'impact',
+          effort: 'low',
+        }],
+        quick_plan: 'Do the thing',
+        tech_news_summary: ['news'],
+      }),
+    },
+    news: {
+      fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }),
+    },
+    airtable: {
+      filterUnchangedDigest: async digest => ({
+        ...digest,
+        contest_digest: [],
+        deduped_opportunities: digest.contest_digest.length,
+      }),
+      saveDigest: async digest => {
+        savedDigest = digest;
+      },
+    },
+    repositories: {
+      getScanTargets: async () => ({
+        source: 'watchlist',
+        repos: ['owner/repo'],
+        issues: [],
+      }),
+    },
+    whatsapp: {
+      sendNotification: async messages => {
+        notifiedMessages = messages;
+      },
+      buildDigestMessages: digest => [`count:${digest.contest_digest.length}`],
+    },
+  });
+
+  const result = await runScan({ trigger: 'scheduled-test' });
+
+  assert.equal(result.digest.contest_digest.length, 1);
+  assert.equal(result.digest.repeated_digest, true);
+  assert.equal(savedDigest.contest_digest.length, 1);
+  assert.deepEqual(notifiedMessages, ['count:1']);
+});
