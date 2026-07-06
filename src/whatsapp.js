@@ -71,6 +71,14 @@ function isAdminChat(chatId) {
   return Boolean(admin && normalizeChatId(chatId) === admin);
 }
 
+async function isSubscriber(chatId) {
+  const normalized = normalizeChatId(chatId);
+  if (!normalized) return false;
+  if (isAdminChat(normalized)) return true;
+  const subscribers = await readSubscribers().catch(() => []);
+  return subscribers.some(item => normalizeChatId(item.chatId) === normalized);
+}
+
 function normalizeCommand(text) {
   const normalized = String(text || '').trim().toLowerCase();
   if (!normalized) return '';
@@ -391,8 +399,8 @@ async function listenForCommands(onScan) {
           await unsubscribeTelegramChat(chatId);
           await sendTelegramToChat(chatId, 'You are unsubscribed. Send /start any time to subscribe again.');
         } else if (command === 'scan') {
-          if (!isAdminChat(chatId)) {
-            await sendTelegramToChat(chatId, 'You are subscribed for daily updates. Manual scans are only available to the bot admin.');
+          if (!(await isSubscriber(chatId))) {
+            await sendTelegramToChat(chatId, 'You need to be subscribed to trigger scans. Send /start to subscribe first.');
             continue;
           }
           const scanMode = parseScanMode(msg.text);
@@ -407,11 +415,11 @@ async function listenForCommands(onScan) {
             await sendTelegramToChat(chatId, `Scan failed: ${e.message}`);
           }
         } else if (command === 'status') {
-          await sendTelegramToChat(chatId, isAdminChat(chatId)
+          await sendTelegramToChat(chatId, (await isSubscriber(chatId))
             ? 'Bot is running. Send /scan to trigger a scan, or /stop to unsubscribe from digests.'
             : 'Bot is running. You will receive daily updates if subscribed. Send /start to subscribe or /stop to unsubscribe.');
         } else if (command === 'help') {
-          await sendTelegramToChat(chatId, isAdminChat(chatId)
+          await sendTelegramToChat(chatId, (await isSubscriber(chatId))
             ? 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues'
             : 'Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot');
         }
