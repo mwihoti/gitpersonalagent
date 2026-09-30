@@ -7,8 +7,13 @@
 //   node scripts/set-webhook.js --keep-pending        → also deliver the queued backlog
 //   node scripts/set-webhook.js --delete              → remove the webhook (back to polling)
 //   node scripts/set-webhook.js --info                → show current webhook status
+//   node scripts/set-webhook.js <url> --force         → skip the env-mismatch guard
+//
+// If the tokens/secret live only in the host's sensitive env, let the
+// deployment register itself:  curl -X POST <url>/api/setup-webhook
 const { setTelegramCommands } = require('../src/whatsapp');
 const { listBots } = require('../src/bots');
+const { registerWebhooks } = require('../src/webhook-setup');
 
 const bots = listBots();
 
@@ -67,33 +72,47 @@ async function main() {
   }
 
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+
+  // Guard against the classic foot-gun: registering from a machine whose .env
+  // does not match the deployment. If the deployment expects a secret (or
+  // serves more bots) and this shell has none, every update would be rejected
+  // and the bot would go silent.
+  if (!process.argv.includes('--force')) {
+    try {
+      const health = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(10_000) }).then((res) => res.json());
+      const remote = health.config || {};
+      const problems = [];
+      if (remote.webhookSecret && !secret) {
+        problems.push('the deployment has TELEGRAM_WEBHOOK_SECRET set, but this shell does not');
+      }
+      if (Number(remote.telegramBots) > bots.length) {
+        problems.push(`the deployment serves ${remote.telegramBots} bots, but this shell only has ${bots.length} token(s)`);
+      }
+      if (problems.length) {
+        console.error('Refusing to register: this environment does not match the deployment.');
+        for (const problem of problems) console.error(`  - ${problem}`);
+        console.error('\nLet the deployment register itself instead (it already has the right values):');
+        console.error(`  curl -X POST ${baseUrl}/api/setup-webhook`);
+        console.error('Add  -H "X-API-Key: <DAN_AGENT_API_KEY>"  if the dashboard key is set. Use --force to override.');
+        process.exit(1);
+      }
+    } catch (error) {
+      console.warn(`Could not compare with ${baseUrl}/api/health (${error.message}); continuing.`);
+    }
+  }
+
   if (!secret) {
     console.warn('Warning: TELEGRAM_WEBHOOK_SECRET is not set — the endpoint will accept unsigned requests.');
   }
 
   // Every bot gets its own URL so the webhook knows which one to reply through.
-  let failed = false;
-  for (const bot of bots) {
-    const webhookUrl = `${baseUrl}/api/telegram?bot=${bot.botId}`;
-    const result = await api(bot.token, 'setWebhook', {
-      url: webhookUrl,
-      secret_token: secret || undefined,
-      allowed_updates: ['message', 'callback_query'],
-      drop_pending_updates: !keepPending,
-    });
-
-    const label = await describe(bot);
-    if (!result.ok) {
-      console.error(`${label}: failed to set webhook —`, result.description || result);
-      failed = true;
-      continue;
-    }
-
-    await setTelegramCommands(bot.token);
-    console.log(`${label} → ${webhookUrl}`);
+  const result = await registerWebhooks({ baseUrl, secret, keepPending, setCommands: setTelegramCommands });
+  for (const item of result.bots) {
+    if (item.ok) console.log(`${item.bot} → ${item.url}`);
+    else console.error(`${item.bot}: failed to set webhook — ${item.error}`);
   }
 
-  if (failed) process.exit(1);
+  if (!result.ok) process.exit(1);
   console.log('\nCommand menus registered. Send /start to each bot to test.');
 }
 
