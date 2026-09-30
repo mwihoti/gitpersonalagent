@@ -123,3 +123,47 @@ test('probeModels reports which configured models answer', async t => {
   const results = await providers.probeModels();
   assert.deepEqual(results.map(r => [r.model, r.ok, r.status]), [['good', true, 200], ['dead', false, 404]]);
 });
+
+test('Groq gpt-oss requests use low reasoning effort, and a 400 retries without optional parameters', async t => {
+  let n = 0;
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'openai/gpt-oss-120b' }, () => {
+    n += 1;
+    return n === 1 ? fail(400, 'property reasoning_effort is unsupported') : ok('{"ok":true}');
+  });
+
+  const result = await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+
+  assert.equal(calls[0].body.reasoning_effort, 'low');
+  assert.equal(calls[1].body.reasoning_effort, undefined);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(result.value, { ok: true });
+});
+
+test('an empty answer is a failure in both the chain and the probe', async t => {
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'silent,talks' }, ({ model }) => ok(model === 'silent' ? '' : '{"ok":true}'));
+
+  const result = await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+  assert.equal(result.model, 'talks');
+  assert.equal(calls.length, 2);
+
+  const probe = await providers.probeModels();
+  assert.deepEqual(probe.map(r => [r.model, r.ok]), [['silent', false], ['talks', true]]);
+  assert.match(probe[0].detail, /empty answer/);
+});
+
+test('listAvailableModels reads each provider\'s /models endpoint', async t => {
+  setup(t, { GROQ_API_KEY: 'g', XAI_API_KEY: 'x' }, () => ok('{}'));
+  const seen = [];
+  global.fetch = async (url, opts) => {
+    seen.push([String(url), opts.headers.Authorization]);
+    if (String(url).includes('x.ai')) return { ok: false, status: 401, text: async () => 'bad key' };
+    return { ok: true, json: async () => ({ data: [{ id: 'openai/gpt-oss-20b' }, { id: 'openai/gpt-oss-120b' }] }) };
+  };
+
+  const listed = await providers.listAvailableModels();
+
+  assert.deepEqual(seen[0], ['https://api.groq.com/openai/v1/models', 'Bearer g']);
+  assert.equal(seen[1][0], 'https://api.x.ai/v1/models');
+  assert.deepEqual(listed[0].models, ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
+  assert.match(listed[1].error, /401 bad key/);
+});
