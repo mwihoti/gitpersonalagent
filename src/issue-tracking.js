@@ -180,6 +180,7 @@ function buildChanges({ digest, repoData = [], seen = new Map(), statusResults =
   const items = digest.contest_digest || [];
   const fresh = [];
   const updated = [];
+  const repeated = [];
   const inDigest = new Set();
 
   for (const item of items) {
@@ -190,12 +191,25 @@ function buildChanges({ digest, repoData = [], seen = new Map(), statusResults =
       fresh.push(item.issue_url || '');
       continue;
     }
-    updated.push({
-      issue_url: item.issue_url,
-      previous_updated_at: tracked.issueUpdatedAt,
-      latest_comment: item.latest_comment || null,
-    });
+    // "Updated" only when GitHub's timestamp really moved since we stored it.
+    // A tracked item picked again without any change (scans with dedupe off)
+    // is a repeat, not news.
+    const current = String(item.issue_updated_at || '').trim();
+    if (tracked.issueUpdatedAt && current && current !== tracked.issueUpdatedAt) {
+      updated.push({
+        issue_url: item.issue_url,
+        previous_updated_at: tracked.issueUpdatedAt,
+        latest_comment: item.latest_comment || null,
+      });
+    } else {
+      repeated.push({ issue_url: item.issue_url, tracked_since: tracked.trackedSince });
+    }
   }
+
+  // A claim is news once. After it has been written to the record's activity
+  // log it is not reported again, and work the user owns is never "claimed".
+  const isOwn = entry => Boolean(entry.owner) || /progress|active|doing|working/i.test(String(entry.status || ''));
+  const alreadyReported = (entry, reason) => Boolean(reason) && String(entry.activityLog || '').includes(reason);
 
   const closed = [];
   const claimed = [];
@@ -214,7 +228,7 @@ function buildChanges({ digest, repoData = [], seen = new Map(), statusResults =
     const key = normalizeUrl(entry.issueUrl);
     if (inDigest.has(key)) continue;
     const live = findIssue(repoData, entry.issueUrl);
-    if (live && live.claim && live.claim.claimed) {
+    if (live && live.claim && live.claim.claimed && !isOwn(entry) && !alreadyReported(entry, live.claim.reason)) {
       claimed.push(describe(entry, { reason: live.claim.reason, by: live.claim.by, pr_url: live.claim.prUrl }));
     }
   }
@@ -228,7 +242,8 @@ function buildChanges({ digest, repoData = [], seen = new Map(), statusResults =
         reason: status.stateReason === 'not_planned' ? 'closed as not planned' : 'closed',
         closed_at: status.closedAt,
       }));
-    } else if (status.assignees && status.assignees.length) {
+    } else if (status.assignees && status.assignees.length
+      && !isOwn(entry) && !alreadyReported(entry, `assigned to ${status.assignees.join(', ')}`)) {
       claimed.push(describe(entry, {
         reason: `assigned to ${status.assignees.join(', ')}`,
         by: status.assignees[0],
@@ -253,6 +268,7 @@ function buildChanges({ digest, repoData = [], seen = new Map(), statusResults =
   return {
     new: fresh,
     updated,
+    repeated,
     closed,
     claimed,
     still_open: stillOpen,

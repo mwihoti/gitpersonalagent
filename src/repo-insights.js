@@ -177,7 +177,7 @@ function scoreFromRange(value, ranges) {
   return ranges[ranges.length - 1].score;
 }
 
-const CLAIM_PATTERN = /\b(i(?:'|’)?ll (?:take(?!\s+a\s+(?:quick\s+|closer\s+|second\s+)?(?:look|peek|glance))|pick|work|do|handle|open|start|give)|i(?:'|’)?d like to (?:take|pick|work|try|handle)|i (?:can|could|would like to|want to|plan to) (?:take|pick|work|try|handle|do)|(?:i am|i(?:'|’)?m) (?:working|going to work|on it)|working on (?:this|it|a fix|a pr|a patch)|pick(?:ing)? this up|take this (?:one|issue|on)|(?:please )?assign (?:this |it )?(?:to )?me|opened? (?:a )?(?:pr|pull request)|(?:have|got) (?:a|an) (?:open )?(?:branch|pr|patch|draft)|(?:branch|pr|patch) (?:should|will|would) (?:close|fix|resolve) this|should close this issue)\b|https?:\/\/github\.com\/[^\s)]+\/(?:tree|pull)\//i;
+const CLAIM_PATTERN = /\b(i(?:'|’)?ll (?:take(?!\s+a\s+(?:quick\s+|closer\s+|second\s+)?(?:look|peek|glance))|pick|work|do|handle|open|start|give)|i(?:'|’)?d like to (?:take|pick|work|try|handle)|i (?:can|could|would like to|want to|plan to) (?:take|pick|work|try|handle|do)|(?:would (?:like|love)|want|happy) to \w+ on (?:this|it)\b|(?:i am|i(?:'|’)?m) (?:working|going to work|on it)|working on (?:this|it|a fix|a pr|a patch)|pick(?:ing)? this up|take this (?:one|issue|on)|(?:please )?assign (?:this |it )?(?:to )?me|opened? (?:a )?(?:pr|pull request)|(?:have|got) (?:a|an) (?:open )?(?:branch|pr|patch|draft)|(?:branch|pr|patch) (?:should|will|would) (?:close|fix|resolve) this|should close this issue)\b|https?:\/\/github\.com\/[^\s)]+\/tree\//i;
 
 function isBotLogin(login) {
   return /\[bot\]$|-bot$|^dependabot|^renovate/i.test(String(login || ''));
@@ -185,7 +185,24 @@ function isBotLogin(login) {
 
 // Detects whether somebody already owns this issue: an assignee, an open
 // linked PR, or a comment that reads like "I'll take this".
-function detectClaim(issue, comments = [], linkedPRs = []) {
+//
+// A comment-only claim goes stale: someone who said "I'll take this" months
+// ago and never opened a PR has usually moved on. Those come back as
+// { claimed: false, stale: true } so the issue stays available, with a note
+// to ask before starting.
+function claimTtlDays() {
+  const value = Number(process.env.CLAIM_TTL_DAYS);
+  return Number.isFinite(value) && value > 0 ? value : 45;
+}
+
+function ageLabel(days) {
+  if (days < 60) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
+
+function detectClaim(issue, comments = [], linkedPRs = [], options = {}) {
+  const now = options.now || Date.now();
   const assignees = (issue.assignees || [])
     .map(user => (typeof user === 'string' ? user : user?.login))
     .filter(Boolean);
@@ -209,6 +226,17 @@ function detectClaim(issue, comments = [], linkedPRs = []) {
     if (!login || login === author || isBotLogin(login)) continue;
     const text = stripMarkdown(comment.body);
     if (CLAIM_PATTERN.test(text)) {
+      const stamp = new Date(comment.created_at || comment.createdAt || '').getTime();
+      const days = Number.isNaN(stamp) ? 0 : Math.floor((now - stamp) / 86400000);
+      if (days > claimTtlDays()) {
+        return {
+          claimed: false,
+          stale: true,
+          reason: `${login} offered to take it ${ageLabel(days)} but no PR followed; likely abandoned, ask before starting`,
+          by: login,
+          prUrl: '',
+        };
+      }
       return { claimed: true, reason: `${login} said they are working on it`, by: login, prUrl: '' };
     }
   }
@@ -312,6 +340,14 @@ function buildIssueFitScore(issue, comments = []) {
   if (issue.claim && issue.claim.claimed) {
     score -= 30;
     reasons.unshift(`someone already owns this: ${issue.claim.reason}`);
+  } else if (issue.claim && issue.claim.stale) {
+    reasons.unshift(issue.claim.reason);
+  }
+
+  const mergedPRs = (issue.linkedPRs || []).filter(pr => pr.state === 'merged' && pr.sameRepo !== false);
+  if (mergedPRs.length && !(issue.claim && issue.claim.claimed)) {
+    score -= 10;
+    reasons.unshift(`PR #${mergedPRs[0].number} for this was already merged; check what is left to do`);
   }
 
   const normalizedScore = Math.max(1, Math.min(100, score));

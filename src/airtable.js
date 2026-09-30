@@ -249,7 +249,7 @@ function sortRecords(records) {
   });
 }
 
-function toFields(updates) {
+function toFields(updates, options = {}) {
   const fields = {};
   if (updates.status !== undefined) fields.Status = updates.status;
   if (updates.priority !== undefined) fields.Priority = updates.priority;
@@ -273,7 +273,9 @@ function toFields(updates) {
       if (a.impact) fields.Impact = a.impact;
     }
   }
-  fields['Last Updated'] = new Date().toISOString();
+  // Bot bookkeeping (baselines, upstream notes) must not look like the user
+  // touched the record, or stale detection would never fire.
+  if (options.touch !== false) fields['Last Updated'] = new Date().toISOString();
   return fields;
 }
 
@@ -383,8 +385,8 @@ async function filterUnchangedDigest(digest, seenMap = null) {
   };
 }
 
-async function updateOpportunity(id, updates) {
-  const fields = toFields(updates);
+async function updateOpportunity(id, updates, options = {}) {
+  const fields = toFields(updates, options);
   const isLocalRecord = String(id).startsWith('local-');
   if (isLocalRecord) {
     return serializeLocalWrite(async () => {
@@ -439,7 +441,7 @@ async function recordIssueEvents(events = []) {
     if (event.line) updates.activityLog = appendActivity(event.activityLog, event.line);
     if (!Object.keys(updates).length) continue;
     try {
-      await updateOpportunity(event.recordId, updates);
+      await updateOpportunity(event.recordId, updates, { touch: event.touch !== false });
       applied += 1;
     } catch (error) {
       console.warn(`  Could not update ${event.recordId}: ${error.message}`);

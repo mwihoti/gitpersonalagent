@@ -619,3 +619,68 @@ test('runScan learns from outcomes, passes the profile to the model, and reports
   assert.equal(notifiedDigest.learning.counts.merged, 4);
   assert.ok(recordedEvents.some(e => e.recordId === 'rec-pr' && e.status === 'Done'));
 });
+
+test('a heuristic analysis never replaces the model write-up, and a full Airtable base is surfaced', async t => {
+  let notifiedDigest = null;
+  const result = state => ({
+    issueUrl: 'u',
+    issueUpdatedAt: '2026-05-17T00:00:00Z',
+    model: 'heuristic',
+    analysis: {
+      maintainerWants: 'Read the issue carefully, confirm the intended outcome from the discussion.',
+      currentState: state,
+      stateReason: state === 'available' ? '' : 'open PR #9 by bob',
+      plan: ['Read the issue and related files'],
+      filesToChange: [{ path: 'real.c', why: 'mentioned', verified: true }, { path: 'guess.c', why: '', verified: false }],
+      openQuestions: [],
+      effort: 'medium',
+      impact: 'medium',
+      codeSkeleton: '',
+      validation: '',
+    },
+    context: {},
+  });
+
+  const { runScan } = await loadRunScanWithStubs(t, {
+    github: {
+      scanRepos: async () => [{ repo: 'owner/repo', issues: [
+        { number: 1, title: 'A', url: 'https://github.com/owner/repo/issues/1', updatedAt: '2026-05-17T00:00:00Z' },
+        { number: 2, title: 'B', url: 'https://github.com/owner/repo/issues/2', updatedAt: '2026-05-17T00:00:00Z' },
+      ] }],
+      fetchIssueStatus: async () => null,
+      parseIssueUrl: () => null,
+    },
+    gemma: {
+      analyzeWithGemma: async () => {
+        const item = url => ({ opportunity: 'Do it', repo: 'owner/repo', issue_url: url, why_it_qualifies: 'good', suggested_action: 'model action', code_skeleton: '// model', clarity_tip: 'npm test', why_it_matters: 'm', effort: 'low' });
+        return { date: '2026-05-17', contest_digest: [item('https://github.com/owner/repo/issues/1'), item('https://github.com/owner/repo/issues/2')], quick_plan: 'p', tech_news_summary: [] };
+      },
+    },
+    news: { fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }) },
+    airtable: {
+      filterUnchangedDigest: async digest => digest,
+      loadTrackedRecords: async () => ({ seen: new Map(), records: [] }),
+      recordIssueEvents: async () => 0,
+      saveDigest: async () => { throw new Error('This base is or will be over its record limits with new records added.'); },
+    },
+    repositories: { getScanTargets: async () => ({ source: 'watchlist', repos: ['owner/repo'], issues: [] }) },
+    whatsapp: {
+      sendNotification: async () => {},
+      buildDigestMessages: digest => { notifiedDigest = digest; return ['d']; },
+      DIGEST_PARSE_MODE: 'HTML',
+    },
+    issueAnalysis: { analyzeIssue: async ({ url }) => result(url.endsWith('/2') ? 'has_open_pr' : 'available') },
+  });
+
+  await runScan({ trigger: 'test' });
+
+  assert.equal(notifiedDigest.contest_digest.length, 1, 'the taken issue is still dropped');
+  const [item] = notifiedDigest.contest_digest;
+  assert.equal(item.maintainer_wants, undefined);
+  assert.equal(item.suggested_action, 'model action');
+  assert.equal(item.code_skeleton, '// model');
+  assert.equal(item.effort, 'low');
+  assert.equal(item.analysis, undefined);
+  assert.deepEqual(item.files_to_change.map(file => file.path), ['real.c']);
+  assert.equal(notifiedDigest.persistence_error, 'Airtable base is at its record limit');
+});

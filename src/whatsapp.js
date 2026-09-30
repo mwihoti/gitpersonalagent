@@ -186,19 +186,31 @@ async function sendTelegramToChat(chatId, message, botToken, options = {}) {
 
 // Sends to every configured bot's own audience, each through its own token.
 async function sendTelegram(message, options = {}) {
-  const bots = listBots();
+  let bots = listBots();
   if (!bots.length) return false;
 
+  // An on-demand scan answers through the bot it was requested on
+  // (SCAN_REPLY_BOT); otherwise the configured order stands.
+  const preferred = String(process.env.SCAN_REPLY_BOT || '').trim();
+  if (preferred) {
+    bots = [...bots].sort((a, b) => Number(b.botId === preferred) - Number(a.botId === preferred));
+  }
+
+  // Someone subscribed to two bots gets the digest once, not once per bot.
+  const delivered = new Set();
   let sentAny = false;
   for (const bot of bots) {
-    const chatIds = await listTelegramSubscribers(bot.botId, {
+    const chatIds = (await listTelegramSubscribers(bot.botId, {
       includeAdmin: bot.isPrimary,
-    });
+    })).filter((chatId) => !delivered.has(chatId));
     if (!chatIds.length) continue;
 
     const results = await Promise.all(
       chatIds.map((chatId) => sendTelegramToChat(chatId, message, bot.token, options)),
     );
+    results.forEach((ok, index) => {
+      if (ok) delivered.add(chatIds[index]);
+    });
     sentAny = sentAny || results.some(Boolean);
   }
   return sentAny;
@@ -337,6 +349,7 @@ function activityLine(item) {
   else if (item.issue_created_at || item.issue_updated_at) parts.push("unassigned");
   const openPRs = (item.linked_prs || []).filter((pr) => pr.state === "open" && pr.sameRepo !== false);
   if (openPRs.length) parts.push(`open PR #${openPRs.map((pr) => pr.number).join(", #")}`);
+  if (item.claim && item.claim.stale && item.claim.by) parts.push(`stale claim by ${item.claim.by}`);
   return html(parts.join(" · "));
 }
 
@@ -376,20 +389,26 @@ function classifyDigest(digest) {
   const changes = digest.changes || null;
   const numbered = items.map((item, index) => ({ item, index: index + 1 }));
   if (!changes) {
-    return { changes: null, numbered, fresh: numbered, updated: [], updatedByUrl: new Map() };
+    return { changes: null, numbered, fresh: numbered, updated: [], repeated: [], updatedByUrl: new Map() };
   }
 
   const updatedByUrl = new Map(
     (changes.updated || []).map((entry) => [normalizeUrl(entry.issue_url), entry]),
   );
+  const repeatedUrls = new Set((changes.repeated || []).map((entry) => normalizeUrl(entry.issue_url)));
   const updated = numbered.filter(({ item }) => updatedByUrl.has(normalizeUrl(item.issue_url)));
-  const fresh = numbered.filter(({ item }) => !updatedByUrl.has(normalizeUrl(item.issue_url)));
-  return { changes, numbered, fresh, updated, updatedByUrl };
+  const repeated = numbered.filter(({ item }) => repeatedUrls.has(normalizeUrl(item.issue_url)));
+  const fresh = numbered.filter(({ item }) => {
+    const key = normalizeUrl(item.issue_url);
+    return !updatedByUrl.has(key) && !repeatedUrls.has(key);
+  });
+  return { changes, numbered, fresh, updated, repeated, updatedByUrl };
 }
 
 function buildDigestMessage(digest) {
-  const { changes, numbered, fresh, updated, updatedByUrl } = classifyDigest(digest);
+  const { changes, numbered, fresh, updated, repeated, updatedByUrl } = classifyDigest(digest);
   const indexLimit = envLimit("DIGEST_INDEX_LIMIT", 12);
+  const closedLimit = envLimit("DIGEST_CLOSED_LIMIT", 6);
   const stillOpenLimit = envLimit("DIGEST_STILL_OPEN_LIMIT", 8);
   const date = cleanText(digest.date) || new Date().toISOString().slice(0, 10);
   const sections = [];
@@ -409,9 +428,12 @@ function buildDigestMessage(digest) {
     const claimed = changes.claimed || [];
     const stillOpen = changes.still_open || [];
     sections.push(
-      `New ${fresh.length} · Updated ${updated.length} · Closed ${closed.length} · Claimed ${claimed.length} · Still open ${stillOpen.length}`,
+      `New ${fresh.length} · Updated ${updated.length}${repeated.length ? ` · Seen before ${repeated.length}` : ""} · Closed ${closed.length} · Claimed ${claimed.length} · Still open ${stillOpen.length}`,
     );
 
+    if (digest.persistence_error) {
+      sections.push(`⚠ New items were not saved: ${html(digest.persistence_error)}. They have no buttons and will show as new again. Free space with <code>npm run dedupe-airtable -- --apply</code>.`);
+    }
     if (fresh.length) {
       sections.push(`<b>New today</b>\n${renderIndex(fresh)}`);
     }
@@ -423,19 +445,21 @@ function buildDigestMessage(digest) {
       });
       sections.push(`<b>Updated since last digest</b>\n${lines.join("\n")}`);
     }
-    if (!fresh.length && !updated.length) {
+    if (!fresh.length && !updated.length && !repeated.length) {
       sections.push(
         stillOpen.length
           ? `No new or updated opportunities today. ${stillOpen.length} tracked issue${stillOpen.length === 1 ? " is" : "s are"} unchanged.`
           : "No new opportunities today.",
       );
     }
+    if (repeated.length) {
+      sections.push(`<b>Seen before, still worth a look</b>\n${renderIndex(repeated)}`);
+    }
     if (closed.length || claimed.length) {
-      const lines = [
-        ...closed.map((entry) => trackedLine(entry)),
-        ...claimed.map((entry) => trackedLine(entry)),
-      ];
-      sections.push(`<b>Closed or claimed since last digest</b>\n${lines.join("\n")}`);
+      const all = [...closed, ...claimed];
+      const lines = all.slice(0, closedLimit).map((entry) => trackedLine(entry));
+      const more = all.length > closedLimit ? `\n…and ${all.length - closedLimit} more in the dashboard` : "";
+      sections.push(`<b>Closed or claimed since last digest</b>\n${lines.join("\n")}${more}`);
     }
     if (stillOpen.length) {
       const lines = stillOpen.slice(0, stillOpenLimit).map((entry) => {
@@ -590,10 +614,11 @@ function buildOpportunityMessage(item, index, total, options = {}) {
 
 function buildDigestMessages(digest) {
   const detailLimit = envLimit("DIGEST_DETAIL_LIMIT", 8);
-  const { changes, fresh, updated, updatedByUrl } = classifyDigest(digest);
-  // Only new and updated items get a detail message; unchanged ones are
-  // already in the reader's history.
-  const detailed = [...fresh, ...updated]
+  const { changes, fresh, updated, repeated, updatedByUrl } = classifyDigest(digest);
+  // New and updated items get a detail message. Repeats only appear when a
+  // scan was explicitly run without dedupe, so they are detailed too.
+  const repeatedKeys = new Set(repeated.map(({ item }) => normalizeUrl(item.issue_url)));
+  const detailed = [...fresh, ...updated, ...repeated]
     .sort((a, b) => a.index - b.index)
     .slice(0, detailLimit);
 
@@ -604,7 +629,7 @@ function buildDigestMessages(digest) {
       const isUpdated = Boolean(changes) && updatedByUrl.has(key);
       const entry = isUpdated ? updatedByUrl.get(key) : null;
       return buildOpportunityMessage(item, position + 1, detailed.length, {
-        tag: changes ? (isUpdated ? "UPDATED" : "NEW") : "",
+        tag: changes ? (isUpdated ? "UPDATED" : repeatedKeys.has(key) ? "SEEN BEFORE" : "NEW") : "",
         comment: entry ? commentLine(entry.latest_comment || item.latest_comment) : "",
       });
     }),

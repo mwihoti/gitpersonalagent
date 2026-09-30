@@ -13,7 +13,9 @@ const OUTCOME_WEIGHTS = {
   pr_opened: 2,
   claimed: 1.5,
   dismissed: -2,
-  ignored: -0.3,
+  // Never looking at an item is not a judgement about its repo or labels.
+  // A backlog nobody triaged used to read as "skips these repos".
+  ignored: 0,
 };
 
 const DISMISS_REASONS = {

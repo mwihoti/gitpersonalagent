@@ -45,33 +45,73 @@ test('validateDigest rejects malformed model output', () => {
   }), /repo must be owner\/repo|effort must be low, medium, or high|issue_url must be an http/i);
 });
 
-test('triageIssues maps ranked model output back to issue URLs', async () => {
+test('triageIssues sends one compact line per candidate and maps ids back to URLs', async () => {
   const { triageIssues } = require('../src/gemma');
   let prompt = null;
-  const scores = await triageIssues([{
+  const repoData = [{
     repo: 'o/r',
     issues: [
-      { url: 'https://github.com/o/r/issues/1', title: 'A', labels: ['bug'], issueFitScore: 60 },
-      { url: 'https://github.com/o/r/issues/2', title: 'B', labels: [], issueFitScore: 50 },
+      { number: 1, url: 'https://github.com/o/r/issues/1', title: 'A | with pipe', labels: ['bug'], issueFitScore: 60, body: 'first body' },
+      { number: 2, url: 'https://github.com/o/r/issues/2', title: 'B', labels: [], issueFitScore: 90, body: 'second body' },
     ],
-  }], {
+  }];
+  const scores = await triageIssues(repoData, {
     request: async ({ user }) => {
       prompt = user;
       return { ranked: [
-        { url: 'https://github.com/o/r/issues/2', score: 90, reason: 'clear ask' },
-        { url: 'https://github.com/o/r/issues/1', score: '30', reason: 'vague' },
-        { url: 'https://github.com/o/r/issues/9', score: 'nan' },
+        { id: 0, score: 90, reason: 'clear ask' },
+        { id: '1', score: '30', reason: 'vague' },
+        { id: 9, score: 50 },
+        { url: 'https://github.com/o/r/issues/1', score: 'nan' },
       ] };
     },
   });
 
-  assert.match(prompt, /"title": "A"/);
+  // Highest heuristic fit is listed first, so id 0 is issue #2.
+  assert.match(prompt, /^Candidates \(2\), one per line:/);
+  assert.match(prompt, /\n0\|o\/r#2\|B\|\|/);
+  assert.match(prompt, /\n1\|o\/r#1\|A \/ with pipe\|bug\|/);
   assert.equal(scores.size, 2);
   assert.equal(scores.get('https://github.com/o/r/issues/2').score, 90);
   assert.equal(scores.get('https://github.com/o/r/issues/1').score, 30);
 
   const single = await triageIssues([{ repo: 'o/r', issues: [{ url: 'u', title: 't' }] }], { request: async () => { throw new Error('should not call'); } });
   assert.equal(single.size, 0);
+});
+
+test('triage and digest inputs shrink to fit a small prompt budget without dropping repos', async () => {
+  const { triageIssues, fitDigestInput } = require('../src/gemma');
+  const repoData = Array.from({ length: 12 }, (_, r) => ({
+    repo: `org/repo-${r}`,
+    repoUrl: `https://github.com/org/repo-${r}`,
+    issues: Array.from({ length: 8 }, (_, i) => ({
+      number: i + 1,
+      url: `https://github.com/org/repo-${r}/issues/${i + 1}`,
+      title: `Issue ${i + 1} about a fairly specific thing in repo ${r}`,
+      body: 'Long body text. '.repeat(200),
+      labels: ['good first issue', 'bug'],
+      updatedAt: '2026-09-29T00:00:00Z',
+      comments: 3,
+      issueFitScore: 50 + i,
+      issueFitReason: 'reason '.repeat(20),
+      recentConversation: [{ author: 'm', createdAt: '2026-09-01', body: 'comment '.repeat(60) }],
+      linkedPRs: [{ number: 5, state: 'open', author: 'x', title: 'a pr title' }],
+    })),
+  }));
+
+  let prompt = '';
+  await triageIssues(repoData, { budgetChars: 12000, request: async ({ user }) => { prompt = user; return { ranked: [] }; } });
+  assert.ok(prompt.length <= 12000, `triage prompt ${prompt.length}`);
+  assert.match(prompt, /^Candidates \(96\)/, 'every candidate still fits');
+
+  const fitted = fitDigestInput(repoData, { issuesPerRepo: 4, budgetChars: 12000 });
+  assert.ok(JSON.stringify(fitted).length <= 12000, `digest input ${JSON.stringify(fitted).length}`);
+  assert.equal(fitted.length, 12, 'all repos are still represented');
+  assert.ok(fitted.every(repo => repo.issues.length >= 2));
+
+  const roomy = fitDigestInput(repoData, { issuesPerRepo: 4, budgetChars: Infinity });
+  assert.equal(roomy[0].issues.length, 4);
+  assert.equal(roomy[0].issues[0].body.length, 1500);
 });
 
 test('a Gemini 403 falls through to Groq, and a dead provider chain still yields a digest', async t => {

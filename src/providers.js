@@ -32,6 +32,21 @@ function env(...names) {
   return '';
 }
 
+function tpm(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+// Providers whose key was rejected (401/403) in this process. A blocked key
+// stays blocked, so there is no point calling it again for every request.
+const deadProviders = new Set();
+
+function resetProviderState() {
+  deadProviders.clear();
+}
+
 function providerRegistry() {
   return {
     gemini: {
@@ -41,6 +56,7 @@ function providerRegistry() {
       models: list(env('GEMINI_MODELS'), ['gemini-2.5-flash-lite', 'gemini-2.5-flash']),
       jsonMode: true,
       maxTokensCap: 16000,
+      tpm: tpm('GEMINI_TPM', 0),
     },
     groq: {
       label: 'Groq',
@@ -52,6 +68,10 @@ function providerRegistry() {
       models: list(env('GROQ_MODELS'), ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']),
       jsonMode: false,
       maxTokensCap: 8192,
+      // Groq's free "on_demand" tier allows 8,000 tokens per minute per model,
+      // counting prompt plus requested output. Raise GROQ_TPM on a paid tier
+      // (or set 0 for no limit) to send fuller prompts.
+      tpm: tpm('GROQ_TPM', 8000),
     },
     xai: {
       label: 'xAI Grok',
@@ -60,6 +80,7 @@ function providerRegistry() {
       models: list(env('XAI_MODELS', 'GROK_MODELS'), ['grok-4.3', 'grok-4.5']),
       jsonMode: true,
       maxTokensCap: 16000,
+      tpm: tpm('XAI_TPM', 0),
     },
     fallback: {
       label: env('FALLBACK_LABEL') || 'Fallback',
@@ -68,18 +89,20 @@ function providerRegistry() {
       models: list(env('FALLBACK_MODELS', 'FALLBACK_MODEL'), []),
       jsonMode: false,
       maxTokensCap: 8192,
+      tpm: tpm('FALLBACK_TPM', 0),
     },
   };
 }
 
 // Providers that are usable right now, in the configured order.
-function activeProviders() {
+function activeProviders(options = {}) {
   const registry = providerRegistry();
   const order = list(env('MODEL_PROVIDERS'), ['gemini', 'groq', 'xai', 'fallback']).map(name => name.toLowerCase());
   const providers = [];
   for (const name of order) {
     const provider = registry[name === 'grok' ? 'xai' : name];
     if (!provider || !provider.apiKey) continue;
+    if (options.live && deadProviders.has(name === 'grok' ? 'xai' : name)) continue;
     if (!provider.url || !provider.models.length) {
       console.warn(`  ${provider.label}: key is set but ${provider.url ? 'FALLBACK_MODELS' : 'FALLBACK_API_URL'} is missing — skipping`);
       continue;
@@ -96,11 +119,62 @@ function hasCloudProvider() {
 }
 
 function compact(message) {
-  return String(message).replace(/\n\s{2,}/g, '\n').slice(0, 9000);
+  return fitPrompt(String(message).replace(/\n\s{2,}/g, '\n'), 9000);
+}
+
+// Shorten a prompt to maxChars while keeping its ending, which is where the
+// task instruction lives.
+function fitPrompt(text, maxChars) {
+  const value = String(text);
+  if (!Number.isFinite(maxChars) || value.length <= maxChars) return value;
+  const marker = '\n…[trimmed to fit the model rate limit]…\n';
+  const tail = Math.min(600, Math.floor(maxChars / 4));
+  const head = Math.max(0, maxChars - tail - marker.length);
+  return `${value.slice(0, head)}${marker}${value.slice(-tail)}`;
 }
 
 function firstLine(text, max = 200) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// What one request may spend on a provider with a tokens-per-minute limit:
+// roughly a third for the answer, the rest for the prompt. ~3 chars per token
+// is deliberately conservative for JSON and code.
+function budgetFor(provider, requestedMaxTokens, systemLength = 0) {
+  const cap = Math.min(requestedMaxTokens, provider.maxTokensCap || requestedMaxTokens);
+  if (!provider.tpm) return { maxTokens: cap, promptChars: Infinity };
+  const maxTokens = Math.min(cap, Math.floor(provider.tpm * 0.35));
+  const promptTokens = provider.tpm - maxTokens - 200;
+  return { maxTokens, promptChars: Math.max(1500, promptTokens * 3 - systemLength) };
+}
+
+// Prompt size (chars) the provider that will most likely answer can take.
+// Callers use it to build a prompt that fits instead of having it truncated.
+function promptBudget({ system = '', maxTokens = 8000 } = {}) {
+  const [first] = activeProviders({ live: true });
+  if (!first) return Infinity;
+  return budgetFor(first, maxTokens, String(system).length).promptChars;
+}
+
+// True when the likely provider is tightly rate limited: callers should send
+// requests one at a time and keep outputs short.
+function isTightBudget() {
+  const [first] = activeProviders({ live: true });
+  return Boolean(first && first.tpm && first.tpm <= 20000);
+}
+
+function retryDelayMs(headers, text) {
+  const header = headers && headers.get ? Number(headers.get('retry-after')) : NaN;
+  if (Number.isFinite(header) && header > 0) return header * 1000;
+  const match = String(text || '').match(/try again in (?:(\d+)m)?\s*([\d.]+)(ms|s)/i);
+  if (!match) return 0;
+  const minutes = Number(match[1] || 0);
+  const value = Number(match[2] || 0);
+  return Math.ceil(minutes * 60000 + (match[3] === 'ms' ? value : value * 1000));
 }
 
 // gpt-oss and similar reasoning models spend output tokens on hidden
@@ -140,78 +214,114 @@ async function callModel(provider, model, { system, user, maxTokens, temperature
     const data = await res.json();
     return { ok: true, content: data.choices?.[0]?.message?.content || '' };
   }
-  return { ok: false, status: res.status, error: firstLine(await res.text().catch(() => '')) };
+  const text = await res.text().catch(() => '');
+  return { ok: false, status: res.status, error: firstLine(text), retryAfterMs: res.status === 429 ? retryDelayMs(res.headers, text) : 0 };
 }
 
 // Walk the chain until a model returns something `parse` accepts.
 // Returns { value, provider, model }. Throws with a summary when all fail.
+//
+// Rate limits (429) are handled in two steps: first move on to the next model,
+// which has its own quota; if every model is rate limited, wait for the
+// soonest reset and go around again, up to MODEL_RATE_LIMIT_WAIT_SECONDS.
 async function runChain({ system, user, parse, maxTokens = 8000, temperature = 0.3, timeoutMs = 120_000, logger = console }) {
-  const providers = activeProviders();
-  if (!providers.length) {
+  if (!activeProviders().length) {
     throw new Error('No cloud model provider is configured');
   }
 
+  // Serverless requests cannot sit out a rate limit; background scans can.
+  const waitBudgetMs = tpm('MODEL_RATE_LIMIT_WAIT_SECONDS', process.env.VERCEL ? 15 : 150) * 1000;
+  const deadline = Date.now() + waitBudgetMs;
   const attempts = [];
-  for (const provider of providers) {
-    let skipProvider = false;
-    for (const model of provider.models) {
-      if (skipProvider) break;
-      let message = user;
-      const jsonMode = provider.jsonMode;
-      let plain = false;
+  const failedModels = new Set();
 
-      for (let round = 0; round < 2; round += 1) {
-        logger.log(`  Sending to ${provider.label} (${model}${round ? ', retry' : ''})...`);
-        let result;
-        try {
-          result = await callModel(provider, model, { system, user: message, maxTokens, temperature, timeoutMs, jsonMode, plain });
-        } catch (error) {
-          attempts.push(`${provider.label}/${model}: ${firstLine(error.message, 120)}`);
-          logger.warn(`  ${provider.label} ${model} request failed (${firstLine(error.message, 120)}) — trying next...`);
-          break;
-        }
+  for (let pass = 0; pass < 5; pass += 1) {
+    const providers = activeProviders({ live: true });
+    let soonestReset = Infinity;
 
-        if (result.ok) {
+    for (const provider of providers) {
+      let skipProvider = false;
+      for (const model of provider.models) {
+        if (skipProvider) break;
+        const key = `${provider.name}/${model}`;
+        if (failedModels.has(key)) continue;
+
+        const budget = budgetFor(provider, maxTokens, String(system).length);
+        let message = fitPrompt(user, budget.promptChars);
+        const jsonMode = provider.jsonMode;
+        let plain = false;
+
+        for (let round = 0; round < 2; round += 1) {
+          logger.log(`  Sending to ${provider.label} (${model}${round ? ', retry' : ''})...`);
+          let result;
           try {
-            if (!String(result.content || '').trim()) throw new Error('empty answer (output budget spent on reasoning?)');
-            return { value: parse(result.content), provider: provider.name, model };
+            result = await callModel(provider, model, { system, user: message, maxTokens: budget.maxTokens, temperature, timeoutMs, jsonMode, plain });
           } catch (error) {
-            attempts.push(`${provider.label}/${model}: unusable answer (${firstLine(error.message, 80)})`);
-            logger.warn(`  ${provider.label} ${model} returned an unusable answer — trying next...`);
+            attempts.push(`${provider.label}/${model}: ${firstLine(error.message, 120)}`);
+            logger.warn(`  ${provider.label} ${model} request failed (${firstLine(error.message, 120)}) — trying next...`);
+            failedModels.add(key);
             break;
           }
-        }
 
-        if (result.status === 401 || result.status === 403) {
-          attempts.push(`${provider.label}: ${result.status} ${result.error}`);
-          logger.warn(`  ${provider.label} rejected the key (${result.status} ${result.error}) — skipping this provider`);
-          skipProvider = true;
+          if (result.ok) {
+            try {
+              if (!String(result.content || '').trim()) throw new Error('empty answer (output budget spent on reasoning?)');
+              return { value: parse(result.content), provider: provider.name, model };
+            } catch (error) {
+              attempts.push(`${provider.label}/${model}: unusable answer (${firstLine(error.message, 80)})`);
+              logger.warn(`  ${provider.label} ${model} returned an unusable answer — trying next...`);
+              failedModels.add(key);
+              break;
+            }
+          }
+
+          if (result.status === 401 || result.status === 403) {
+            attempts.push(`${provider.label}: ${result.status} ${result.error}`);
+            logger.warn(`  ${provider.label} rejected the key (${result.status} ${result.error}) — skipping this provider for the rest of the run`);
+            deadProviders.add(provider.name);
+            skipProvider = true;
+            break;
+          }
+          if (result.status === 429) {
+            const delay = result.retryAfterMs || 20_000;
+            soonestReset = Math.min(soonestReset, delay);
+            attempts.push(`${provider.label}/${model}: 429 rate limited`);
+            logger.warn(`  ${provider.label} ${model} is rate limited (resets in ~${Math.ceil(delay / 1000)}s) — trying next...`);
+            break;
+          }
+          if (result.status === 413 && round === 0) {
+            logger.warn(`  ${provider.label} ${model}: request too large — retrying with a compact payload...`);
+            message = compact(user);
+            continue;
+          }
+          // A 400 can mean an optional parameter (JSON mode, reasoning effort)
+          // is not supported by this model: retry once with a bare request.
+          if (result.status === 400 && !plain && round === 0 && !/model_not_found|does not exist/i.test(result.error)) {
+            logger.warn(`  ${provider.label} ${model}: request rejected (${result.error.slice(0, 100)}) — retrying without optional parameters...`);
+            plain = true;
+            continue;
+          }
+
+          attempts.push(`${provider.label}/${model}: ${result.status} ${result.error}`);
+          const hint = result.status === 404 || /not found|decommission|deprecat|does not exist/i.test(result.error)
+            ? ` — model looks retired; set ${provider.name.toUpperCase()}_MODELS`
+            : '';
+          logger.warn(`  ${provider.label} ${model} failed (${result.status} ${result.error})${hint} — trying next...`);
+          failedModels.add(key);
           break;
         }
-        if (result.status === 413 && round === 0) {
-          logger.warn(`  ${provider.label} ${model}: request too large — retrying with a compact payload...`);
-          message = compact(user);
-          continue;
-        }
-        // A 400 can mean an optional parameter (JSON mode, reasoning effort)
-        // is not supported by this model: retry once with a bare request.
-        if (result.status === 400 && !plain && round === 0 && !/model_not_found|does not exist/i.test(result.error)) {
-          logger.warn(`  ${provider.label} ${model}: request rejected (${result.error.slice(0, 100)}) — retrying without optional parameters...`);
-          plain = true;
-          continue;
-        }
-
-        attempts.push(`${provider.label}/${model}: ${result.status} ${result.error}`);
-        const hint = result.status === 404 || /not found|decommission|deprecat|does not exist/i.test(result.error)
-          ? ` — model looks retired; set ${provider.name.toUpperCase()}_MODELS`
-          : '';
-        logger.warn(`  ${provider.label} ${model} failed (${result.status} ${result.error})${hint} — trying next...`);
-        break;
       }
     }
+
+    // Nothing was rate limited, so waiting would not help.
+    if (soonestReset === Infinity) break;
+    const wait = Math.min(soonestReset + 1000, 65_000);
+    if (Date.now() + wait > deadline) break;
+    logger.warn(`  Every model is rate limited — waiting ${Math.ceil(wait / 1000)}s for the quota to reset...`);
+    await sleep(wait);
   }
 
-  throw new Error(`All model providers failed: ${attempts.join(' | ')}`);
+  throw new Error(`All model providers failed: ${[...new Set(attempts)].join(' | ')}`);
 }
 
 // Ping every configured provider/model with a tiny prompt. Used by
@@ -283,8 +393,12 @@ function describeProviders() {
 module.exports = {
   activeProviders,
   describeProviders,
+  fitPrompt,
   hasCloudProvider,
+  isTightBudget,
   listAvailableModels,
+  promptBudget,
+  resetProviderState,
   probeModels,
   runChain,
 };

@@ -52,9 +52,9 @@ function scanModeLabel(mode) {
 
 // Called by handleTelegramUpdate for /scan. Returns a status message that is
 // relayed to the requester.
-async function triggerScan({ scanMode = 'default', chatId = '' } = {}) {
+async function triggerScan({ scanMode = 'default', chatId = '', botId = '' } = {}) {
   if (isDispatchConfigured()) {
-    await dispatchScan({ scanMode, chatId });
+    await dispatchScan({ scanMode, chatId, botId });
     return {
       message: `Queued a ${scanModeLabel(scanMode)} scan on GitHub Actions. The digest lands here when it finishes — usually a few minutes.`,
     };

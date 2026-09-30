@@ -11,6 +11,7 @@ const { runWithLock } = require('./scan-state');
 const { sendNotification, buildDigestMessages, DIGEST_PARSE_MODE } = require('./whatsapp');
 const tracking = require('./issue-tracking');
 const { analyzeIssue } = require('./issue-analysis');
+const { isTightBudget } = require('./providers');
 
 function groupSeedIssues(issues = []) {
   return issues.reduce((acc, issue) => {
@@ -185,7 +186,8 @@ async function deepenDigest(digest, options = {}) {
   const {
     logger = console,
     limit = Number(process.env.DIGEST_ANALYZE_LIMIT) || 8,
-    concurrency = 2,
+    // A tightly rate-limited provider cannot serve two analyses at once.
+    concurrency = isTightBudget() ? 1 : 2,
     analyze = analyzeIssue,
   } = options;
   if (process.env.DIGEST_DEEP_ANALYSIS === 'false') return digest;
@@ -224,6 +226,12 @@ async function deepenDigest(digest, options = {}) {
     if (TAKEN_STATES.has(a.currentState)) {
       dropped.push({ ...item, current_state: a.currentState, state_reason: a.stateReason });
       return null;
+    }
+    // The heuristic fallback is template text. It may drop a taken issue
+    // (above) and contribute verified file paths, but it must not replace the
+    // model's own write-up or pose as maintainer intent.
+    if (result.model === 'heuristic') {
+      return { ...item, files_to_change: (a.filesToChange || []).filter(file => file.verified), analysis_pending: true };
     }
     const plan = (a.plan || []).map((step, index) => `${index + 1}. ${step}`).join('\n');
     return {
@@ -280,8 +288,9 @@ function buildRecordEvents(digest, seen) {
   const events = [];
   const tracked = url => seen.get(tracking.normalizeUrl(url)) || {};
 
+  const updatedUrls = new Set((changes.updated || []).map(entry => tracking.normalizeUrl(entry.issue_url)));
   for (const item of digest.contest_digest || []) {
-    if (!item.record_id || !item.seen_before) continue;
+    if (!item.record_id || !updatedUrls.has(tracking.normalizeUrl(item.issue_url))) continue;
     const comment = item.latest_comment;
     const detail = comment && comment.body
       ? `: ${comment.author || 'someone'} — ${String(comment.body).slice(0, 160)}`
@@ -306,6 +315,7 @@ function buildRecordEvents(digest, seen) {
       recordId: entry.record_id,
       activityLog: tracked(entry.issue_url).activityLog,
       line: `[bot ${date}] ${entry.reason}${entry.pr_url ? ` (${entry.pr_url})` : ''}`,
+      touch: false,
     });
   }
   return events;
@@ -496,8 +506,12 @@ async function runScan(options = {}) {
         ));
       } catch (e) {
         logger.warn(`  Persistence skipped: ${e.message}`);
+        // Surface it: unsaved items get no buttons and will look new again tomorrow.
+        digest.persistence_error = /record limit|over its record/i.test(e.message)
+          ? 'Airtable base is at its record limit'
+          : String(e.message).slice(0, 160);
       }
-      const baselines = tracking.baselineEvents(annotated);
+      const baselines = tracking.baselineEvents(annotated).map(event => ({ ...event, touch: false }));
       if (baselines.length) logger.log(`  Recording a first activity baseline for ${baselines.length} older records`);
       tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || []), ...baselines])
         .catch(e => logger.warn(`  Record updates skipped: ${e.message}`)));

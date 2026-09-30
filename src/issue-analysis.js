@@ -9,6 +9,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const { buildIssueContext } = require('./issue-context');
 const { requestJson } = require('./gemma');
+const { promptBudget } = require('./providers');
 const { parseIssueUrl, fetchIssueStatus } = require('./github');
 const { buildIssueInsight } = require('./repo-insights');
 
@@ -56,12 +57,18 @@ function section(title, body) {
   return `=== ${title} ===\n${body}\n`;
 }
 
-function buildPrompt(context) {
+// Builds the analysis prompt. With a finite budget (chars) each section gets
+// a share, so a rate-limited provider still sees the issue, the most recent
+// discussion, and the code, instead of a prompt cut off in the middle.
+function buildPrompt(context, budgetChars = Infinity) {
   const { repo, issue, comments, pullRequests, contributing, files, claim } = context;
+  const limited = Number.isFinite(budgetChars);
+  const share = fraction => (limited ? Math.max(300, Math.floor(budgetChars * fraction)) : Infinity);
+  const clip = (text, max) => (String(text || '').length > max ? `${String(text).slice(0, max)}…` : String(text || ''));
   const parts = [];
 
   parts.push(section('REPOSITORY', [
-    `${repo.name} — ${repo.description || 'no description'}`,
+    `${repo.name} — ${clip(repo.description || 'no description', 200)}`,
     `Language: ${repo.language || 'unknown'} · Stars: ${repo.stars} · Default branch: ${repo.defaultBranch || 'unknown'}`,
   ].join('\n')));
 
@@ -72,42 +79,55 @@ function buildPrompt(context) {
     `Labels: ${issue.labels.join(', ') || 'none'} · Assignees: ${issue.assignees.join(', ') || 'none'} · Comments: ${issue.commentsCount} · Reactions: ${issue.reactions}`,
     issue.milestone ? `Milestone: ${issue.milestone}` : '',
     '',
-    issue.body || '(no description)',
+    clip(issue.body || '(no description)', Math.min(8000, share(0.22))),
   ].filter(line => line !== null).join('\n')));
 
-  if (claim && claim.claimed) {
+  if (claim && (claim.claimed || claim.stale)) {
     parts.push(section('OWNERSHIP SIGNAL', claim.reason));
   }
 
   if (comments.length) {
-    parts.push(section(`DISCUSSION (${comments.length} of ${issue.commentsCount} comments, in order)`, comments.map(comment =>
-      `[${comment.createdAt.slice(0, 10)}] ${comment.author}${comment.authorAssociation && comment.authorAssociation !== 'NONE' ? ` (${comment.authorAssociation.toLowerCase()})` : ''}:\n${comment.body}`
-    ).join('\n\n')));
+    // Newest comments matter most; keep the first one too when there is room.
+    const perComment = limited ? 500 : 1200;
+    const render = comment =>
+      `[${comment.createdAt.slice(0, 10)}] ${comment.author}${comment.authorAssociation && comment.authorAssociation !== 'NONE' ? ` (${comment.authorAssociation.toLowerCase()})` : ''}:\n${clip(comment.body, perComment)}`;
+    let room = share(0.3);
+    const picked = [];
+    for (let i = comments.length - 1; i >= 0; i -= 1) {
+      const text = render(comments[i]);
+      if (picked.length && text.length > room) break;
+      picked.unshift(text);
+      room -= text.length + 2;
+    }
+    parts.push(section(`DISCUSSION (${picked.length} of ${issue.commentsCount} comments, most recent, in order)`, picked.join('\n\n')));
   } else {
     parts.push(section('DISCUSSION', 'No comments yet.'));
   }
 
   if (pullRequests.length) {
     parts.push(section('LINKED PULL REQUESTS', pullRequests.map(pr => {
-      const files = pr.files && pr.files.length ? `\n  files: ${pr.files.map(file => file.path).join(', ')}` : '';
+      const prFiles = pr.files && pr.files.length ? `\n  files: ${pr.files.slice(0, limited ? 6 : 15).map(file => file.path).join(', ')}` : '';
       const where = pr.sameRepo === false && pr.repo ? ` (in ${pr.repo})` : '';
-      return `#${pr.number} [${pr.state}]${where} by ${pr.author || 'unknown'}: ${pr.title}${files}`;
+      return `#${pr.number} [${pr.state}]${where} by ${pr.author || 'unknown'}: ${pr.title}${prFiles}`;
     }).join('\n')));
   }
 
   if (contributing) {
-    parts.push(section(`CONTRIBUTING GUIDE (${contributing.path}, excerpt)`, contributing.text));
+    parts.push(section(`CONTRIBUTING GUIDE (${contributing.path}, excerpt)`, clip(contributing.text, Math.min(4000, share(0.06)))));
   }
 
   if (files.length) {
+    const perFile = limited ? Math.floor(share(0.3) / files.length) : Infinity;
     for (const file of files) {
-      parts.push(section(`SOURCE ${file.path} (lines ${file.startLine}-${file.endLine} of ${file.totalLines}; ${file.reason})`, file.text));
+      parts.push(section(`SOURCE ${file.path} (lines ${file.startLine}-${file.endLine} of ${file.totalLines}; ${file.reason})`, clip(file.text, perFile)));
     }
   } else {
     parts.push(section('SOURCE', 'No source files could be resolved from the issue text.'));
   }
 
-  parts.push('Analyze the material above and return the JSON object.');
+  parts.push(limited
+    ? 'Analyze the material above and return the JSON object. Be concise: plan of at most 6 steps, code_skeleton of at most 25 lines.'
+    : 'Analyze the material above and return the JSON object.');
   return parts.join('\n');
 }
 
@@ -142,7 +162,8 @@ function normalizeAnalysis(raw, context) {
       why: str(item && item.why, 300),
       verified: knownPaths.has(str(item && item.path, 200)),
     })),
-    plan: list(raw.plan, 8),
+    // Models often number the steps themselves; the renderers add numbers.
+    plan: list(raw.plan, 8, item => str(item, 400).replace(/^\s*(?:step\s*)?\d+\s*[.):-]\s*/i, '')),
     validation: str(raw.validation, 300),
     effort: LEVELS.has(effort) ? effort : 'medium',
     impact: LEVELS.has(impact) ? impact : 'medium',
@@ -193,7 +214,7 @@ function looksComplete(raw) {
 // One retry with a nudge covers the common failure: prose around the JSON or
 // a missing key. Provider failover already happens inside request().
 async function requestAnalysis(context, request, logger) {
-  const user = buildPrompt(context);
+  const user = buildPrompt(context, promptBudget({ system: SYSTEM_PROMPT, maxTokens: 6000 }));
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
@@ -304,7 +325,7 @@ async function analyzeIssue(input, options = {}) {
 
   if (!force) {
     const cached = await readCache(ref.url);
-    if (cached && cached.issueUpdatedAt) {
+    if (cached && cached.issueUpdatedAt && cached.model !== 'heuristic') {
       // Cheap freshness check: one request for the issue's updated_at.
       const current = knownUpdatedAt || (await fetchStatus(ref.repo, ref.number).catch(() => null) || {}).updatedAt || '';
       if (current && current === cached.issueUpdatedAt) {
@@ -333,7 +354,9 @@ async function analyzeIssue(input, options = {}) {
     context: summarizeContext(context),
     cached: false,
   };
-  await writeCache(ref.url, payload);
+  // A heuristic result only means the model was unavailable this time; caching
+  // it would keep serving templates after the model is back.
+  if (model !== 'heuristic') await writeCache(ref.url, payload);
   return payload;
 }
 

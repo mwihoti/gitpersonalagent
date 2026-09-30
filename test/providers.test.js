@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const KEYS = ['GEMINI_API_KEY', 'GROQ_API_KEY', 'XAI_API_KEY', 'GROK_API_KEY', 'FALLBACK_API_KEY', 'FALLBACK_API_URL',
+const KEYS = ['GROQ_TPM', 'MODEL_RATE_LIMIT_WAIT_SECONDS', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'XAI_API_KEY', 'GROK_API_KEY', 'FALLBACK_API_KEY', 'FALLBACK_API_URL',
   'FALLBACK_MODELS', 'MODEL_PROVIDERS', 'GEMINI_MODELS', 'GROQ_MODELS', 'XAI_MODELS', 'GROK_MODELS'];
 
 function setup(t, env, handler) {
@@ -11,6 +11,7 @@ function setup(t, env, handler) {
   Object.assign(process.env, env);
   const prevFetch = global.fetch;
   const calls = [];
+  require('../src/providers').resetProviderState();
   global.fetch = async (url, opts) => {
     const body = JSON.parse(opts.body);
     calls.push({ url: String(url), model: body.model, body, auth: opts.headers.Authorization });
@@ -166,4 +167,60 @@ test('listAvailableModels reads each provider\'s /models endpoint', async t => {
   assert.equal(seen[1][0], 'https://api.x.ai/v1/models');
   assert.deepEqual(listed[0].models, ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
   assert.match(listed[1].error, /401 bad key/);
+});
+
+test('a rate-limited chain tries the other model, then waits for the reset and succeeds', async t => {
+  let n = 0;
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'big,small', MODEL_RATE_LIMIT_WAIT_SECONDS: '10' }, () => {
+    n += 1;
+    if (n <= 2) return { ok: false, status: 429, headers: { get: () => null }, text: async () => 'Rate limit reached. Please try again in 50ms.' };
+    return ok('{"done":true}');
+  });
+  const logs = [];
+  const started = Date.now();
+
+  const result = await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: { log() {}, warn: m => logs.push(m) } });
+
+  assert.deepEqual(calls.map(c => c.model), ['big', 'small', 'big']);
+  assert.equal(result.model, 'big');
+  assert.ok(Date.now() - started >= 1000, 'waited for the quota to reset');
+  assert.ok(logs.some(m => /Every model is rate limited — waiting/.test(m)));
+});
+
+test('with no wait budget a fully rate-limited chain fails fast', async t => {
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'big,small', MODEL_RATE_LIMIT_WAIT_SECONDS: '0' },
+    () => ({ ok: false, status: 429, headers: { get: () => '30' }, text: async () => 'slow down' }));
+  await assert.rejects(() => providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet }), /429 rate limited/);
+  assert.equal(calls.length, 2);
+});
+
+test('a rejected key is remembered for the rest of the run', async t => {
+  const calls = setup(t, { GEMINI_API_KEY: 'blocked', GEMINI_MODELS: 'gem', GROQ_API_KEY: 'g', GROQ_MODELS: 'm' },
+    ({ url }) => (url.includes('googleapis') ? fail(403, 'denied') : ok('{"ok":1}')));
+
+  await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+  await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+  await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+
+  assert.equal(calls.filter(c => c.url.includes('googleapis')).length, 1);
+  assert.equal(calls.length, 4);
+  assert.equal(providers.isTightBudget(), true, 'budget now follows Groq, the live provider');
+});
+
+test('requests are sized to a tokens-per-minute budget and keep the closing instruction', async t => {
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'm', GROQ_TPM: '8000' }, () => ok('{"ok":1}'));
+  const user = `${'data '.repeat(20000)}\nFINAL INSTRUCTION: return JSON.`;
+
+  assert.equal(providers.promptBudget({ system: 'x'.repeat(1000), maxTokens: 12000 }), (8000 - 2800 - 200) * 3 - 1000);
+  await providers.runChain({ system: 'x'.repeat(1000), user, parse: JSON.parse, maxTokens: 12000, logger: quiet });
+
+  const sent = calls[0].body;
+  assert.equal(sent.max_tokens, 2800);
+  assert.ok(sent.messages[1].content.length <= 14000, `prompt ${sent.messages[1].content.length}`);
+  assert.match(sent.messages[1].content, /trimmed to fit the model rate limit/);
+  assert.match(sent.messages[1].content, /FINAL INSTRUCTION: return JSON\.$/);
+
+  process.env.GROQ_TPM = '0';
+  assert.equal(providers.promptBudget({ system: '', maxTokens: 12000 }), Infinity);
+  assert.equal(providers.isTightBudget(), false);
 });
