@@ -242,6 +242,143 @@ only serves a thin webhook, so Vercel is already sufficient.
 
 ---
 
+## Deep issue analysis
+
+The heuristic fit score gets an issue onto the list. The deep analysis is what
+tells you whether to actually start. For each issue it reads:
+
+- the full issue and the whole thread in order (long threads keep the opening
+  and the latest comments);
+- linked pull requests, with the files a same-repo PR touched;
+- the project's `CONTRIBUTING.md`;
+- the source files the issue mentions, resolved by path and, with a
+  `GITHUB_TOKEN`, by code search for backticked identifiers such as
+  `json_to_s64`. Excerpts are centred on the symbol.
+
+The model returns a structured answer: what the maintainer wants with quoted
+evidence, the current state (`available`, `claimed`, `has_open_pr`,
+`likely_done`, `stale`, `blocked`, `needs_design`, `needs_clarification`),
+questions to ask before starting, the files to change (marked ✓ when the path
+was verified against the repo), a step plan, the validation command, effort,
+impact, a confidence score, a grounded code skeleton, and an optional draft
+comment for the issue. Without a model provider it degrades to the heuristic
+insight so the shape is always the same.
+
+Where it runs:
+
+- **Daily digest:** the top `DIGEST_ANALYZE_LIMIT` picks (default 8) are
+  analysed before sending. Items that turn out to be claimed or already have
+  an open PR are dropped; the rest carry the maintainer summary, plan, files,
+  and questions into Telegram and Airtable. Set `DIGEST_DEEP_ANALYSIS=false`
+  to skip this step.
+- **Workbench:** "Analyze issue" on any opportunity runs it on demand, stores
+  the result on the record, and pre-fills Quick plan and Next step (unsaved
+  until you press Save).
+- **Repo scout:** "Analyze" on any issue card.
+- **API:** `POST /api/issue-analysis` with `{ "url": "https://github.com/o/r/issues/1" }`
+  (or `repo` + `number`), optional `force` and `recordId`.
+
+Before the model picks, a cheap **triage pass** ranks every candidate (clear
+ask, maintainer interest, narrow scope, not taken) and blends that with the
+heuristic score. Set `DIGEST_TRIAGE=false` to skip it, or `true` to force it
+with a local Ollama model.
+
+From Telegram, `/analyze <issue url>` runs the same analysis and replies with
+the maintainer summary, plan, files, and questions. Each opportunity detail
+message carries two buttons: **I'll take it** sets the record to In Progress
+with you as owner, **Not for me** marks it Done. Both write to Airtable.
+
+Results are cached by issue URL and `updated_at` under `data/issue-analysis/`,
+so re-opening an unchanged issue is free. Priority is now derived from impact
+and effort together rather than effort alone. Optional Airtable columns
+`Impact`, `Maintainer Wants`, `Files To Change`, `Open Questions`, and
+`Analysis` (long text) persist the result; `npm run setup` creates them, and
+they are silently skipped if absent.
+
+---
+
+## Learning loop and engineering follow-through
+
+**Learning loop.** Every outcome on a tracked record feeds back into ranking:
+merged PRs and claims count for a repo, its labels, language, and effort
+level; dismissals count against them. The Telegram "Not for me" button asks
+why (too big, not my stack, already taken, not interesting) and those reasons
+sharpen the signal: "too big" penalises that effort level, "not my stack"
+penalises that language. The learned weights nudge the fit score (capped at
+±12 per factor, scaled by how much evidence exists) and the digest model gets a
+one-paragraph contributor profile ("ships in rust-payjoin, dismisses docs
+issues"). The dashboard's Learning loop card shows what the ranker has learned.
+Optional Airtable columns `Labels` and `Language` make label and language
+learning possible; without them repo and effort learning still work.
+
+**Engineering follow-through.** For every In Progress record with a PR URL the
+scan checks the pull request: merged, closed, draft, conflicts, CI failing,
+changes requested, approved, or awaiting review. The digest gets a "Your work"
+section that leads with items where the ball is in your court. A merged PR
+marks the record Done and logs `[outcome merged]`, which is the strongest
+positive signal for the learning loop. Items in progress with no PR for
+`PR_STALL_DAYS` (default 5), or PRs that need you and have sat for that long,
+get a nudge. Link a PR with `/pr <issue url> <pr url>` from Telegram or the PR
+URL field in the workbench. Set `GITHUB_LOGINS` (comma-separated GitHub
+usernames) and open PRs you authored on a tracked issue are linked
+automatically.
+
+---
+
+## What the daily digest contains
+
+The digest is a changelog, not a snapshot. Before the model runs, the scan
+loads every issue already saved in Airtable (or the local store) and:
+
+- drops issues that are unchanged since they were last recommended, so the
+  same eight items do not come back every morning;
+- drops issues somebody already owns: an assignee, an open PR in the same repo
+  that references the issue, or a comment such as "I'll pick this up";
+- keeps issues with new activity, and passes the latest comment to the model.
+
+The Telegram summary then shows **New today**, **Updated since last digest**
+(with the newest comment), **Closed or claimed since last digest**, and a short
+**Still open** list. Detail messages are sent only for new and updated items.
+Each line carries the issue age, last comment, assignee state, and any open PR.
+
+Airtable follows along: new items are added once, tracked items get a `[bot]`
+line in their Activity Log when the issue moves, and issues that close upstream
+are set to `Done` (or whichever option your Status field maps to).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DIGEST_MAX_PER_REPO` | `2` | Cap on opportunities per repository in one digest (`0` disables) |
+| `DIGEST_DETAIL_LIMIT` | `8` | Maximum per-item detail messages |
+| `DIGEST_INDEX_LIMIT` | `12` | Maximum lines in the summary index |
+| `DIGEST_STILL_OPEN_LIMIT` | `8` | Lines in the Still open section |
+| `DIGEST_TRACK_DAYS` | `21` | How far back tracked issues are re-checked for closure or claims |
+| `DIGEST_STATUS_CHECKS` | `30` | Maximum GitHub status checks per run |
+| `DIGEST_INCLUDE_CLAIMED` | `false` | Set `true` to keep claimed issues in the model input |
+| `GITHUB_FETCH_TIMELINE` | `true` | Set `false` to skip linked-PR lookups (saves one request per issue) |
+| `SCAN_MODE` | `default` | Mode for `node agent.js --scan`; the daily workflow reads the `DAILY_SCAN_MODE` repository variable |
+| `DIGEST_BODY_CHARS` | `1500` | Issue body characters sent to the digest model (was 120) |
+| `DIGEST_ANALYZE_LIMIT` | `8` | Opportunities that get the deep analysis per scan |
+| `DIGEST_DEEP_ANALYSIS` | `true` | Set `false` to skip deep analysis in scans |
+
+Messages use Telegram HTML (linked titles, `code` spans). If Telegram rejects a
+message, it is re-sent as plain text.
+
+The Monday **weekly digest** runs without dedupe and adds a "This week"
+section: items added, finished, in progress, and gone quiet (no update in
+`DIGEST_STALE_DAYS`, default 14). The workbench shows the same stale flag, and
+each selected item loads its live GitHub state: open or closed, assignees, open
+PRs, the latest comment, and whether it changed since you saved.
+
+Deep analysis is skipped automatically inside Vercel functions (the in-request
+scan fallback); run scans on GitHub Actions to get it. Set
+`DIGEST_INCLUDE_NEWS=false` to drop the news section entirely.
+
+Bases that accumulated one row per scan day for the same issue can be cleaned
+with `npm run dedupe-airtable` (dry run) and `npm run dedupe-airtable -- --apply`.
+It keeps the row with the most human input and deletes the rest.
+
+---
+
 ## Configuration
 
 All configuration lives in `.env`. Copy `.env.example` to get started.

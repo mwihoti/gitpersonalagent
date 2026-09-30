@@ -43,6 +43,12 @@ const els = {
   detailMatters: document.getElementById('detail-matters'),
   detailTip: document.getElementById('detail-tip'),
   detailCode: document.getElementById('detail-code'),
+  detailAnalyzeButton: document.getElementById('detail-analyze-button'),
+  detailLive: document.getElementById('detail-live'),
+  learningBadge: document.getElementById('learning-badge'),
+  learningSummary: document.getElementById('learning-summary'),
+  learningTags: document.getElementById('learning-tags'),
+  detailAnalysis: document.getElementById('detail-analysis'),
   saveStatus: document.getElementById('save-status'),
   paginationSummary: document.getElementById('pagination-summary'),
   prevPageButton: document.getElementById('prev-page-button'),
@@ -108,6 +114,26 @@ function getVisibleOpportunities() {
 
   const watchedRepos = new Set(state.repositories.map(item => normalizeText(item.repo)));
   return state.opportunities.filter(item => watchedRepos.has(normalizeText(item.repo)));
+}
+
+function renderLearning(learning) {
+  if (!learning || !learning.sampleSize) {
+    els.learningBadge.textContent = 'No signal yet';
+    els.learningTags.innerHTML = '';
+    return;
+  }
+  const c = learning.counts || {};
+  els.learningBadge.textContent = `${learning.sampleSize} outcomes · ${learning.confidence}% confidence`;
+  els.learningSummary.textContent = learning.summary || '';
+  els.learningTags.innerHTML = [
+    createTag(`${c.merged || 0} merged`, 'tag-open'),
+    createTag(`${c.pr_opened || 0} PRs open`),
+    createTag(`${c.claimed || 0} claimed`),
+    createTag(`${c.dismissed || 0} dismissed`, 'tag-stale'),
+    ...(learning.boostedRepos || []).map(repo => createTag(`▲ ${escapeHtml(repo)}`, 'tag-open')),
+    ...(learning.penalizedRepos || []).map(repo => createTag(`▼ ${escapeHtml(repo)}`, 'tag-stale')),
+    ...(learning.dislikedLabels || []).map(label => createTag(`skips ${escapeHtml(label)}`, 'tag-stale')),
+  ].join('');
 }
 
 function renderStats() {
@@ -200,6 +226,52 @@ function formatHistoryDate(value) {
   });
 }
 
+const STALE_DAYS = 14;
+
+function isStale(item) {
+  if (/done|closed|complete|dropped/i.test(String(item.status || ''))) return false;
+  const stamp = new Date(item.lastUpdated || item.date || '').getTime();
+  if (Number.isNaN(stamp)) return false;
+  return Date.now() - stamp > STALE_DAYS * 86400000;
+}
+
+function formatAgeShort(value) {
+  const stamp = new Date(value || '').getTime();
+  if (Number.isNaN(stamp)) return '';
+  const days = Math.floor((Date.now() - stamp) / 86400000);
+  if (days <= 0) return 'today';
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
+
+// Fetches the live GitHub state for the selected item and renders the strip.
+async function loadLiveState(item) {
+  els.detailLive.classList.remove('hidden');
+  els.detailLive.innerHTML = '<span class="save-status">Checking GitHub…</span>';
+  const params = new URLSearchParams({ url: item.issueUrl, since: item.issueUpdatedAt || '' });
+  const res = await authorizedFetch(`/api/issue-status?${params}`);
+  if (!res.ok) {
+    els.detailLive.innerHTML = `<span class="save-status">${escapeHtml(await readErrorResponse(res))}</span>`;
+    return;
+  }
+  const live = await res.json();
+  if (state.selectedId !== item.id) return;
+  const openPRs = (live.linkedPRs || []).filter(pr => pr.state === 'open' && pr.sameRepo !== false);
+  const parts = [
+    createTag(live.state === 'closed' ? `Closed${live.stateReason ? ` (${escapeHtml(live.stateReason.replace(/_/g, ' '))})` : ''}` : 'Open upstream', live.state === 'closed' ? 'tag-closed' : 'tag-open'),
+    live.changedSinceSaved ? createTag('Changed since saved', 'tag-changed') : '',
+    live.assignees && live.assignees.length ? createTag(`Assigned: ${escapeHtml(live.assignees.join(', '))}`) : createTag('Unassigned'),
+    live.claim && live.claim.claimed ? createTag(`Claimed: ${escapeHtml(live.claim.reason)}`, 'tag-stale') : '',
+    ...openPRs.map(pr => `<a class="tag" href="${escapeHtml(pr.url)}" target="_blank" rel="noreferrer">Open PR #${pr.number}${pr.author ? ` by ${escapeHtml(pr.author)}` : ''}</a>`),
+    live.updatedAt ? createTag(`Updated ${escapeHtml(formatAgeShort(live.updatedAt))}`) : '',
+  ];
+  if (live.latestComment) {
+    parts.push(`<div class="live-comment"><strong>${escapeHtml(live.latestComment.author)}</strong> ${escapeHtml(formatAgeShort(live.latestComment.createdAt))}: ${escapeHtml(live.latestComment.body)}</div>`);
+  }
+  els.detailLive.innerHTML = parts.filter(Boolean).join('');
+}
+
 function renderList() {
   if (!state.filtered.length) {
     els.paginationSummary.textContent = 'Showing 0 of 0';
@@ -239,7 +311,9 @@ function renderList() {
         ${createTag(item.date || 'No date')}
         ${createTag(item.status, `status-${statusClass(item.status)}`)}
         ${createTag(item.priority, `priority-${statusClass(item.priority)}`)}
-        ${createTag(item.effort || 'medium')}
+        ${createTag(`Effort ${item.effort || 'medium'}`)}
+        ${item.impact ? createTag(`Impact ${escapeHtml(item.impact)}`) : ''}
+        ${isStale(item) ? createTag('Stale', 'tag-stale') : ''}
         ${item.source ? createTag(`Source: ${escapeHtml(item.source)}`) : ''}
         ${item.score ? createTag(`Score: ${escapeHtml(item.score)}`) : ''}
       </div>
@@ -296,6 +370,16 @@ function selectOpportunity(id) {
   els.detailMatters.textContent = item.whyItMatters || 'No impact note yet.';
   els.detailTip.textContent = item.clarityTip || 'No validation tip yet.';
   els.detailCode.textContent = item.codeSkeleton || '// No code skeleton available yet.';
+  renderDetailAnalysis(item.analysis || null);
+  if (item.issueUrl) {
+    loadLiveState(item).catch(error => {
+      els.detailLive.innerHTML = `<span class="save-status">${escapeHtml(error.message)}</span>`;
+    });
+  } else {
+    els.detailLive.classList.add('hidden');
+  }
+  els.detailAnalyzeButton.disabled = !item.issueUrl;
+  els.detailAnalyzeButton.textContent = item.analysis ? 'Re-analyze issue' : 'Analyze issue';
   const summary = [
     item.date ? `Scan date ${item.date}` : '',
     item.lastUpdated ? `Last updated ${new Date(item.lastUpdated).toLocaleString()}` : '',
@@ -365,6 +449,7 @@ async function loadOpportunities() {
   state.opportunities = payload.opportunities || [];
   state.storage = payload.storage || 'unknown';
   state.currentPage = 1;
+  renderLearning(payload.learning || null);
   renderStats();
   applyFilters();
 
@@ -394,6 +479,171 @@ async function loadHealth() {
     throw new Error(await readErrorResponse(res));
   }
   renderHealth(await res.json());
+}
+
+const STATE_LABELS = {
+  available: ['Available', 'state-available'],
+  claimed: ['Claimed by someone', 'state-taken'],
+  has_open_pr: ['Has an open PR', 'state-taken'],
+  likely_done: ['Likely already done', 'state-taken'],
+  stale: ['Stale', 'state-unclear'],
+  blocked: ['Blocked', 'state-unclear'],
+  needs_design: ['Needs design first', 'state-unclear'],
+  needs_clarification: ['Needs clarification', 'state-unclear'],
+};
+
+function levelTag(label, value) {
+  return value ? createTag(`${label} ${escapeHtml(value)}`) : '';
+}
+
+// Turns an analysis result ({ analysis, context, model, ... }) into HTML.
+function analysisHtml(result) {
+  const a = result.analysis || {};
+  const ctx = result.context || {};
+  const [stateLabel, stateClass] = STATE_LABELS[a.currentState] || ['Unknown', 'state-unclear'];
+  const when = result.analyzedAt ? new Date(result.analyzedAt).toLocaleString() : '';
+  const block = (title, body) => (body ? `<section><h4>${title}</h4>${body}</section>` : '');
+  const listBlock = (title, items, ordered = false) => (items && items.length
+    ? block(title, `<${ordered ? 'ol' : 'ul'}>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</${ordered ? 'ol' : 'ul'}>`)
+    : '');
+
+  const meta = `
+    <div class="analysis-meta">
+      <strong class="${stateClass}">${escapeHtml(stateLabel)}</strong>
+      ${levelTag('Effort', a.effort)}
+      ${levelTag('Impact', a.impact)}
+      ${a.confidence ? createTag(`Confidence ${a.confidence}%`) : ''}
+      ${createTag(result.model === 'heuristic' ? 'Heuristic (no model)' : 'Model analysis')}
+      ${when ? `<span class="save-status">${escapeHtml(when)}${result.cached ? ' · cached' : ''}</span>` : ''}
+    </div>
+    ${a.stateReason ? `<p>${escapeHtml(a.stateReason)}</p>` : ''}
+  `;
+
+  const evidence = (a.evidence || []).length
+    ? block('Evidence from the thread', a.evidence.map(item => `
+        <blockquote class="analysis-quote">${escapeHtml(item.quote)}<cite>${escapeHtml(item.who)}${item.when ? ` · ${escapeHtml(item.when)}` : ''}</cite></blockquote>
+      `).join(''))
+    : '';
+
+  const files = (a.filesToChange || []).length
+    ? block('Files to change', `<ul>${a.filesToChange.map(file => `
+        <li><code>${escapeHtml(file.path)}</code>${file.verified ? ' ✓' : ''}${file.why ? ` — ${escapeHtml(file.why)}` : ''}</li>
+      `).join('')}</ul>`)
+    : '';
+
+  const prs = (ctx.pullRequests || []).length
+    ? block('Linked pull requests', `<ul>${ctx.pullRequests.map(pr => `
+        <li><a href="${escapeHtml(pr.url)}" target="_blank" rel="noreferrer">${escapeHtml(pr.sameRepo === false && pr.repo ? `${pr.repo}#${pr.number}` : `#${pr.number}`)}</a> (${escapeHtml(pr.state)}${pr.author ? ` by ${escapeHtml(pr.author)}` : ''}) ${escapeHtml(pr.title || '')}</li>
+      `).join('')}</ul>`)
+    : '';
+
+  const sources = (ctx.files || []).length
+    ? block('Source consulted', `<ul>${ctx.files.map(file => `
+        <li><a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer"><code>${escapeHtml(file.path)}</code></a> lines ${file.startLine}-${file.endLine} · ${escapeHtml(file.reason)}</li>
+      `).join('')}${ctx.contributing ? `<li><a href="${escapeHtml(ctx.contributing.url)}" target="_blank" rel="noreferrer">${escapeHtml(ctx.contributing.path)}</a></li>` : ''}</ul>`)
+    : '';
+
+  const conversation = (ctx.comments || []).length
+    ? block('Recent conversation', `<div class="repo-comment-list">${ctx.comments.map(comment => `
+        <article class="repo-comment">
+          <strong>${escapeHtml(comment.author)}</strong>
+          <span>${escapeHtml(String(comment.createdAt || '').slice(0, 10))}</span>
+          <p>${escapeHtml(comment.body)}</p>
+        </article>
+      `).join('')}</div>`)
+    : '';
+
+  return [
+    meta,
+    block('Summary', `<p>${escapeHtml(a.summary || '')}</p>`),
+    block('What the maintainer wants', `<p>${escapeHtml(a.maintainerWants || '')}</p>`),
+    evidence,
+    listBlock('Plan', a.plan, true),
+    files,
+    listBlock('Ask before starting', a.openQuestions),
+    a.validation ? block('Validation', `<p><code>${escapeHtml(a.validation)}</code></p>`) : '',
+    a.firstCommentDraft ? block('Draft comment for the issue', `<p>${escapeHtml(a.firstCommentDraft)}</p>`) : '',
+    prs,
+    sources,
+    conversation,
+    a.codeSkeleton ? block('Grounded starter code', `<pre>${escapeHtml(a.codeSkeleton)}</pre>`) : '',
+  ].join('');
+}
+
+function renderDetailAnalysis(result) {
+  if (!result || !result.analysis) {
+    els.detailAnalysis.classList.add('hidden');
+    els.detailAnalysis.innerHTML = '';
+    return;
+  }
+  els.detailAnalysis.classList.remove('hidden');
+  els.detailAnalysis.innerHTML = analysisHtml(result);
+}
+
+async function requestIssueAnalysis(payload) {
+  const res = await authorizedFetch('/api/issue-analysis', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorResponse(res));
+  }
+  return res.json();
+}
+
+// Workbench: analyze the selected opportunity, store it on the record, and
+// pre-fill the plan fields (left unsaved so the user stays in control).
+async function analyzeSelectedOpportunity() {
+  const item = state.opportunities.find(entry => entry.id === state.selectedId);
+  if (!item || !item.issueUrl) return;
+  const force = Boolean(item.analysis);
+  els.detailAnalyzeButton.disabled = true;
+  els.saveStatus.textContent = 'Reading the issue, thread, linked PRs, and source…';
+  try {
+    const result = await requestIssueAnalysis({ url: item.issueUrl, recordId: item.id, force });
+    item.analysis = result;
+    renderDetailAnalysis(result);
+    const a = result.analysis || {};
+    if (a.plan && a.plan.length) {
+      els.detailQuickPlan.value = a.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
+      if (!els.detailNextStep.value.trim()) {
+        els.detailNextStep.value = a.plan[0];
+      }
+    }
+    if (a.codeSkeleton) {
+      els.detailCode.textContent = a.codeSkeleton;
+    }
+    if (a.validation) {
+      els.detailTip.textContent = a.validation;
+    }
+    els.saveStatus.textContent = 'Analysis ready. Plan fields were pre-filled; save to keep them.';
+    els.detailAnalyzeButton.textContent = 'Re-analyze issue';
+  } finally {
+    els.detailAnalyzeButton.disabled = false;
+  }
+}
+
+// Repo scout: analyze one issue card in place.
+async function analyzeRepoIssue(button) {
+  const url = button.dataset.url;
+  const card = button.closest('.repo-issue-card');
+  const target = card.querySelector('.repo-analysis-target');
+  button.disabled = true;
+  button.textContent = 'Analyzing…';
+  try {
+    const result = await requestIssueAnalysis({ url, force: button.dataset.force === 'true' });
+    target.classList.remove('hidden');
+    target.innerHTML = analysisHtml(result);
+    button.textContent = 'Re-analyze';
+    button.dataset.force = 'true';
+  } catch (error) {
+    target.classList.remove('hidden');
+    target.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+    button.textContent = 'Analyze';
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderRepoIssues(repo) {
@@ -432,8 +682,12 @@ function renderRepoIssues(repo) {
     <article class="repo-issue-card">
       <div class="list-item-header">
         <h4>${escapeHtml(issue.title)}</h4>
-        <a href="${escapeHtml(issue.url)}" target="_blank" rel="noreferrer" class="button button-secondary">Open</a>
+        <div class="watchlist-actions">
+          <button type="button" class="button button-secondary repo-analyze-button" data-url="${escapeHtml(issue.url)}">Analyze</button>
+          <a href="${escapeHtml(issue.url)}" target="_blank" rel="noreferrer" class="button button-secondary">Open</a>
+        </div>
       </div>
+      <section class="analysis-card repo-analysis-target hidden"></section>
       <p>${escapeHtml((issue.body || '').slice(0, 180) || 'No issue description provided.')}</p>
       <div class="list-meta">
         ${createTag(`#${issue.number}`)}
@@ -441,8 +695,10 @@ function renderRepoIssues(repo) {
         ${createTag(`${issue.issueFitScore || 0}/100`, `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
         ${createTag(issue.issueFitLabel || 'Low fit', `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
         ${createTag(issue.issueComplexity || 'Medium', `complexity-${statusClass(issue.issueComplexity || 'medium')}`)}
+        ${issue.claim && issue.claim.claimed ? createTag(`Claimed: ${escapeHtml(issue.claim.reason)}`, 'fit-low-fit') : ''}
         ${(issue.labels || []).slice(0, 4).map(label => createTag(escapeHtml(label))).join('')}
       </div>
+      <p class="save-status">Quick read from labels and thread keywords. Click Analyze for a grounded read of the thread, linked PRs, and source.</p>
       <section class="repo-insight-block">
         <h5>Issue fit score</h5>
         <p>${escapeHtml(issue.issueFitReason || 'No fit rationale available yet.')}</p>
@@ -453,12 +709,12 @@ function renderRepoIssues(repo) {
           <p>${escapeHtml(issue.conversationSummary || 'No discussion summary available yet.')}</p>
         </section>
         <section class="repo-insight-block">
-          <h5>What the maintainer expects</h5>
+          <h5>Likely expectation (heuristic)</h5>
           <p>${escapeHtml(issue.expectationSummary || 'No expectation summary available yet.')}</p>
         </section>
       </div>
       <section class="repo-insight-block">
-        <h5>Quick plan</h5>
+        <h5>Generic plan (heuristic)</h5>
         <ol class="repo-plan-list">
           ${(issue.quickPlan || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}
         </ol>
@@ -673,6 +929,16 @@ function wireEvents() {
     addRepositoryToWatchlist(event).catch(error => {
       els.watchlistStatus.textContent = error.message;
     });
+  });
+  els.detailAnalyzeButton.addEventListener('click', () => {
+    analyzeSelectedOpportunity().catch(error => {
+      els.saveStatus.textContent = error.message;
+      els.detailAnalyzeButton.disabled = false;
+    });
+  });
+  els.repoIssuesList.addEventListener('click', event => {
+    const button = event.target.closest('.repo-analyze-button');
+    if (button) analyzeRepoIssue(button);
   });
   els.runScanButton.addEventListener('click', () => {
     triggerScan().catch(error => {

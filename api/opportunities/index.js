@@ -1,5 +1,6 @@
 'use strict';
 const { listOpportunities, isAirtableConfigured } = require('../../src/airtable');
+const { buildPreferenceModel, describePreferences } = require('../../src/feedback');
 const { requireApiAuth } = require('../../src/auth');
 const { allowOptions, sendJson } = require('../../src/http');
 
@@ -16,6 +17,7 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 200, {
       opportunities: result.opportunities,
       storage: result.storage || (isAirtableConfigured() ? 'airtable' : 'local'),
+      learning: describePreferences(buildPreferenceModel(result.opportunities)),
     });
   } catch (error) {
     return sendJson(res, 500, { error: error.message });

@@ -19,9 +19,14 @@ const arg = process.argv[2];
 if (!arg || arg === '--scan') {
   // SCAN_MODE / SCAN_DEDUPE / SCAN_TRIGGER let CI (see
   // .github/workflows/telegram-scan.yml) run a specific scan without new flags.
+  // The weekly digest is a review, not a diff: it lists the full picture
+  // unless SCAN_DEDUPE says otherwise.
+  const dedupe = process.env.SCAN_DEDUPE
+    ? process.env.SCAN_DEDUPE !== 'false'
+    : process.env.DIGEST_MODE !== 'weekly';
   run({
     scanMode: process.env.SCAN_MODE || 'default',
-    dedupe: process.env.SCAN_DEDUPE !== 'false',
+    dedupe,
     ...(process.env.SCAN_TRIGGER ? { trigger: process.env.SCAN_TRIGGER } : {}),
   }).then(() => {
     if (!arg) process.exit(0);
