@@ -188,3 +188,54 @@ test('analyzeIssue retries once when the model answer is malformed, but not on p
   assert.equal(providerCalls, 1);
   assert.equal(fallback.model, 'heuristic');
 });
+
+test('buildPrompt respects a prompt budget and keeps the newest comments', async t => {
+  const { buildPrompt } = await loadAnalysisModule(t);
+  const big = sampleContext({
+    issue: { ...sampleContext().issue, body: 'B'.repeat(9000), commentsCount: 30 },
+    comments: Array.from({ length: 30 }, (_, i) => ({ id: i, author: `user${i}`, authorAssociation: 'NONE', createdAt: `2026-08-${String(i + 1).padStart(2, '0')}T00:00:00Z`, body: `comment ${i} `.repeat(80), reactions: 0 })),
+    files: [
+      { path: 'a.c', url: 'u', reason: 'r', totalLines: 900, startLine: 1, endLine: 120, text: 'x'.repeat(3500) },
+      { path: 'b.c', url: 'u', reason: 'r', totalLines: 900, startLine: 1, endLine: 120, text: 'y'.repeat(3500) },
+    ],
+    contributing: { path: 'CONTRIBUTING.md', url: 'u', text: 'c'.repeat(4000) },
+  });
+
+  const prompt = buildPrompt(big, 12000);
+  assert.ok(prompt.length <= 12600, `prompt is ${prompt.length}`);
+  assert.match(prompt, /user29/, 'newest comment kept');
+  assert.doesNotMatch(prompt, /user0 /, 'oldest comments dropped');
+  assert.match(prompt, /SOURCE a\.c/);
+  assert.match(prompt, /SOURCE b\.c/);
+  assert.match(prompt, /Be concise: plan of at most 6 steps/);
+
+  const full = buildPrompt(big);
+  assert.ok(full.length > 30000);
+});
+
+test('heuristic results are not cached, and plan steps lose their own numbering', async t => {
+  const { analyzeIssue } = await loadAnalysisModule(t);
+  let calls = 0;
+  const options = {
+    fetchContext: async () => sampleContext(),
+    logger: { warn() {} },
+    knownUpdatedAt: '2026-09-01T00:00:00Z',
+    request: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('All model providers failed: 429');
+      return { summary: 's', maintainer_wants: 'w', plan: ['1. Open the file', 'Step 2: Edit it', '3) Test'], current_state: 'available' };
+    },
+  };
+
+  const first = await analyzeIssue({ url: 'https://github.com/owner/repo/issues/77' }, options);
+  assert.equal(first.model, 'heuristic');
+
+  const second = await analyzeIssue({ url: 'https://github.com/owner/repo/issues/77' }, options);
+  assert.equal(second.model, 'model', 'the model is asked again instead of serving the cached template');
+  assert.equal(second.cached, false);
+  assert.deepEqual(second.analysis.plan, ['Open the file', 'Edit it', 'Test']);
+
+  const third = await analyzeIssue({ url: 'https://github.com/owner/repo/issues/77' }, options);
+  assert.equal(third.cached, true);
+  assert.equal(calls, 2);
+});

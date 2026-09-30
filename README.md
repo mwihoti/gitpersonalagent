@@ -288,6 +288,26 @@ FALLBACK_API_KEY=sk-or-...
 FALLBACK_MODELS=meta-llama/llama-3.3-70b-instruct,mistralai/mistral-small
 ```
 
+### Rate limits and small free tiers
+
+Groq's free tier allows **8,000 tokens per minute per model**, counting the
+prompt and the requested answer. A full scan is far bigger than that, so the
+pipeline budgets for it (`GROQ_TPM`, default `8000`):
+
+- Prompts are **built to fit**: the digest input drops detail per issue before
+  it drops repositories, triage sends one compact line per candidate, and the
+  analysis prompt keeps the issue, the newest comments, and the source.
+- On a 429 the next model is tried first, since each model has its own quota.
+  When every model is limited, the scan waits for the reset and continues, up
+  to `MODEL_RATE_LIMIT_WAIT_SECONDS` per request (default 150, 15 on Vercel).
+- Deep analyses run one at a time on a tight budget.
+- A key rejected with 401/403 is skipped for the rest of the run.
+
+Expect a scan on the free Groq tier to take about five minutes and to work
+from short excerpts. A provider with a real quota (a working Gemini key, xAI,
+or a paid Groq tier with `GROQ_TPM` raised, `0` for no limit) gives the model
+full issue bodies and threads and is the single biggest quality upgrade.
+
 Check the whole chain before relying on it:
 
 ```bash
@@ -406,6 +426,25 @@ The Telegram summary then shows **New today**, **Updated since last digest**
 (with the newest comment), **Closed or claimed since last digest**, and a short
 **Still open** list. Detail messages are sent only for new and updated items.
 Each line carries the issue age, last comment, assignee state, and any open PR.
+
+More behaviours worth knowing:
+
+- **Claims expire.** "I'll take this" with no PR after `CLAIM_TTL_DAYS`
+  (default 45) no longer hides an issue. It is offered again with a
+  "stale claim by X" note so you can ask before starting.
+- **A claim is reported once.** After the note is written to the record's
+  Activity Log it does not reappear, and the closed/claimed section is capped
+  at `DIGEST_CLOSED_LIMIT` lines (default 6).
+- **Scans never overlap.** All three workflows share one concurrency group.
+- **`/scan`** reports what changed and says so when nothing did.
+  `/scan all`, `/scan goodfirst`, and `/scan medium` show everything again,
+  labelled "Seen before" where nothing moved.
+- **Two bots.** Add `TELEGRAM_BOT_TOKEN_2` to the Actions environment so both
+  audiences get digests. A chat subscribed to both bots receives one copy, and
+  an on-demand scan answers through the bot it was requested on.
+- **Storage problems are shown.** If Airtable refuses new rows (the free plan
+  caps records per base), the digest says so. Run
+  `npm run dedupe-airtable -- --apply` to clear duplicate rows.
 
 Airtable follows along: new items are added once, tracked items get a `[bot]`
 line in their Activity Log when the issue moves, and issues that close upstream

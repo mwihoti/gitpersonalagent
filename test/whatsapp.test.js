@@ -253,6 +253,72 @@ test("engineering section leads with PRs that need you", () => {
   assert.match(message, /Link a PR with <code>\/pr/);
 });
 
+test("the digest caps the closed/claimed list, labels repeats, and warns when nothing was saved", () => {
+  const entry = (n) => ({ issue_url: `https://github.com/o/r/issues/${n}`, repo: "o/r", title: `Taken ${n}`, reason: "assigned to bob", tracked_since: "2026-08-31" });
+  const item = (n) => ({ opportunity: `Item ${n}`, repo: "o/r", issue_url: `https://github.com/o/r/issues/${n}`, why_it_qualifies: "w", suggested_action: "s", clarity_tip: "", effort: "low", claim: n === 2 ? { stale: true, by: "ghost" } : null, issue_updated_at: "2026-09-29T00:00:00Z" });
+  const messages = buildDigestMessages({
+    date: "2026-09-30",
+    contest_digest: [item(1), item(2)],
+    persistence_error: "Airtable base is at its record limit",
+    changes: {
+      new: ["https://github.com/o/r/issues/1"],
+      updated: [],
+      repeated: [{ issue_url: "https://github.com/o/r/issues/2" }],
+      closed: [],
+      claimed: Array.from({ length: 32 }, (_, i) => entry(100 + i)),
+      still_open: [],
+    },
+    quick_plan: "plan",
+    tech_news_summary: [],
+  });
+  const summary = messages[0];
+
+  assert.match(summary, /New 1 · Updated 0 · Seen before 1 · Closed 0 · Claimed 32/);
+  assert.match(summary, /⚠ New items were not saved: Airtable base is at its record limit/);
+  assert.match(summary, /<b>Seen before, still worth a look<\/b>/);
+  assert.match(summary, /stale claim by ghost/);
+  assert.equal((summary.match(/Taken \d+/g) || []).length, 6);
+  assert.match(summary, /…and 26 more in the dashboard/);
+  assert.match(summary, /<b>Execution plan<\/b>/, "the rest of the digest is no longer cut off");
+  assert.doesNotMatch(summary, /Message shortened/);
+  assert.match(messageText(messages[2]), /Opportunity 2 of 2<\/b> · SEEN BEFORE/);
+});
+
+test("a chat subscribed to two bots gets the digest once, through the requested bot", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "danagent-twobots-"));
+  const saved = { dir: process.env.DAN_AGENT_DATA_DIR, t1: process.env.TELEGRAM_BOT_TOKEN, t2: process.env.TELEGRAM_BOT_TOKEN_2, chat: process.env.TELEGRAM_CHAT_ID, reply: process.env.SCAN_REPLY_BOT };
+  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, TELEGRAM_BOT_TOKEN: "111:AAA", TELEGRAM_BOT_TOKEN_2: "222:BBB", TELEGRAM_CHAT_ID: "", AIRTABLE_API_KEY: "", AIRTABLE_BASE_ID: "" });
+  for (const mod of ["../src/whatsapp", "../src/config", "../src/subscribers", "../src/bots", "../src/airtable"]) delete require.cache[require.resolve(mod)];
+  const fresh = require("../src/whatsapp");
+  const sent = [];
+  const prevFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    sent.push([String(url).match(/bot(\d+):/)[1], String(body.chat_id)]);
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+
+  try {
+    await fresh.subscribeTelegramChat({ id: 500, type: "private" }, "111");
+    await fresh.subscribeTelegramChat({ id: 500, type: "private" }, "222");
+    await fresh.subscribeTelegramChat({ id: 600, type: "private" }, "222");
+
+    sent.length = 0;
+    await fresh.sendNotification("hello");
+    assert.deepEqual(sent.sort(), [["111", "500"], ["222", "600"]]);
+
+    sent.length = 0;
+    process.env.SCAN_REPLY_BOT = "222";
+    await fresh.sendNotification("hello");
+    assert.deepEqual(sent.sort(), [["222", "500"], ["222", "600"]]);
+  } finally {
+    global.fetch = prevFetch;
+    const restore = (key, value) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+    restore("DAN_AGENT_DATA_DIR", saved.dir); restore("TELEGRAM_BOT_TOKEN", saved.t1); restore("TELEGRAM_BOT_TOKEN_2", saved.t2); restore("TELEGRAM_CHAT_ID", saved.chat); restore("SCAN_REPLY_BOT", saved.reply);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("buildDigestMessages explains a quiet day without a model digest", () => {
   const messages = buildDigestMessages({
     date: "2026-09-04",

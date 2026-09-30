@@ -23,11 +23,21 @@ on:
         description: 'Telegram chat to notify if the scan fails (optional)'
         required: false
         default: ''
+      bot_id:
+        description: 'Bot the scan was requested on, so the digest answers there (optional)'
+        required: false
+        default: ''
+
+concurrency:
+  # One scan at a time across every workflow: parallel scans fight over the
+  # same model rate limit and both save the same "new" items.
+  group: repo-scan
+  cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: danpersonaagent   # reads secrets from the danpersonaagent environment
 
     steps:
@@ -45,7 +55,10 @@ jobs:
         run: node agent.js --scan
         env:
           SCAN_MODE: ${{ github.event.client_payload.scan_mode || inputs.scan_mode || 'default' }}
-          SCAN_DEDUPE: 'false'   # an on-demand scan should always return something
+          # A plain /scan reports what changed (and says so when nothing did).
+          # The explicit modes (/scan all|goodfirst|medium) show everything again.
+          SCAN_DEDUPE: ${{ (github.event.client_payload.scan_mode || inputs.scan_mode || 'default') == 'default' && 'true' || 'false' }}
+          SCAN_REPLY_BOT: ${{ github.event.client_payload.bot_id || inputs.bot_id || '' }}
           SCAN_TRIGGER: telegram-actions
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -63,6 +76,7 @@ jobs:
           AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
           AIRTABLE_SUBSCRIBERS_TABLE: ${{ secrets.AIRTABLE_SUBSCRIBERS_TABLE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}  # second bot (optional)
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
           WHATSAPP_APIKEY: ${{ secrets.WHATSAPP_APIKEY }}

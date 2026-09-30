@@ -106,7 +106,7 @@ test('buildChanges separates new, updated, closed, claimed, and still-open issue
   const digest = {
     contest_digest: [
       { issue_url: 'https://github.com/owner/repo/issues/3', repo: 'owner/repo' },
-      { issue_url: URL1, repo: 'owner/repo', latest_comment: { author: 'm', body: 'hi', createdAt: '2026-08-25T00:00:00Z' } },
+      { issue_url: URL1, repo: 'owner/repo', issue_updated_at: '2026-08-25T00:00:00Z', latest_comment: { author: 'm', body: 'hi', createdAt: '2026-08-25T00:00:00Z' } },
     ],
   };
   const repoData = [{
@@ -269,4 +269,61 @@ test('rows without a stored timestamp are unchanged, not updated, and get a base
 
   assert.deepEqual(baselineEvents(annotated), [{ recordId: 'rec-1', issueUpdatedAt: '2026-09-01T00:00:00Z' }]);
   assert.deepEqual(baselineEvents(annotated, 0), []);
+});
+
+test('buildChanges labels unchanged repeats, reports a claim once, and never flags your own work', () => {
+  const seen = seenWith([
+    { issueUrl: URL1, issueUpdatedAt: '2026-08-20T00:00:00Z' },
+    { issueUrl: URL2, opportunity: 'Reported before', activityLog: '[bot 2026-09-29] open PR #5 by alice (https://x/pull/5)' },
+    { issueUrl: 'https://github.com/owner/repo/issues/3', opportunity: 'Mine', status: 'In Progress', owner: 'dan' },
+    { issueUrl: 'https://github.com/owner/repo/issues/4', opportunity: 'Fresh claim' },
+    { issueUrl: 'https://github.com/owner/repo/issues/5', opportunity: 'Reason changed', activityLog: '[bot 2026-09-20] carol said they are working on it' },
+  ]);
+  const claim = (reason, by) => ({ claimed: true, reason, by, prUrl: '' });
+  const repoData = [{
+    repo: 'owner/repo',
+    issues: [
+      { url: URL2, claim: claim('open PR #5 by alice', 'alice') },
+      { url: 'https://github.com/owner/repo/issues/3', claim: claim('open PR #9 by dan-gh', 'dan-gh') },
+      { url: 'https://github.com/owner/repo/issues/4', claim: claim('assigned to bob', 'bob') },
+      { url: 'https://github.com/owner/repo/issues/5', claim: claim('open PR #7 by carol', 'carol') },
+    ],
+  }];
+  const digest = { contest_digest: [{ issue_url: URL1, issue_updated_at: '2026-08-20T00:00:00Z' }] };
+
+  const changes = buildChanges({ digest, repoData, seen, statusResults: [], skipped: {} });
+
+  assert.deepEqual(changes.updated, []);
+  assert.deepEqual(changes.repeated.map(entry => entry.issue_url), [URL1]);
+  assert.deepEqual(changes.claimed.map(entry => entry.title).sort(), ['Fresh claim', 'Reason changed']);
+});
+
+test('detectClaim expires old comment claims, tolerates typos, and ignores plain PR links', () => {
+  const now = Date.parse('2026-09-30T00:00:00Z');
+  const issue = { assignees: [], user: { login: 'reporter' } };
+
+  const stale = detectClaim(issue, [{ user: { login: 'old' }, created_at: '2025-12-01T00:00:00Z', body: "I'll take this" }], [], { now });
+  assert.equal(stale.claimed, false);
+  assert.equal(stale.stale, true);
+  assert.match(stale.reason, /old offered to take it 10mo ago but no PR followed/);
+
+  const recent = detectClaim(issue, [{ user: { login: 'new' }, created_at: '2026-09-14T00:00:00Z', body: 'HI @maint I would like to wokr on this documentation issues' }], [], { now });
+  assert.equal(recent.claimed, true);
+  assert.equal(recent.by, 'new');
+
+  const link = detectClaim(issue, [{ user: { login: 'x' }, created_at: '2026-09-20T00:00:00Z', body: 'Related: https://github.com/o/r/pull/12 for context' }], [], { now });
+  assert.equal(link.claimed, false);
+  assert.equal(link.stale, undefined);
+
+  // An open PR is a live claim no matter how old the comment is.
+  const viaPr = detectClaim(issue, [{ user: { login: 'old' }, created_at: '2025-01-01T00:00:00Z', body: "I'll take this" }], [{ number: 3, state: 'open', author: 'old', sameRepo: true }], { now });
+  assert.equal(viaPr.claimed, true);
+});
+
+test('buildIssueFitScore flags issues whose linked PR already merged', () => {
+  const base = { title: 'Update spec handling', body: 'Spec changed, please update the implementation accordingly here.', labels: [{ name: 'good first issue' }], comments: 1, updated_at: new Date().toISOString() };
+  const plain = buildIssueFitScore(base, []);
+  const merged = buildIssueFitScore({ ...base, linkedPRs: [{ number: 505, state: 'merged', sameRepo: true }] }, []);
+  assert.equal(plain.issueFitScore - merged.issueFitScore, 10);
+  assert.match(merged.issueFitReason, /PR #505 for this was already merged/);
 });

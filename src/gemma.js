@@ -1,6 +1,6 @@
 'use strict';
 const config = require('./config');
-const { runChain, hasCloudProvider } = require('./providers');
+const { runChain, hasCloudProvider, promptBudget, isTightBudget } = require('./providers');
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const EFFORT_VALUES = new Set(['low', 'medium', 'high']);
 
@@ -71,7 +71,7 @@ function buildUserMessage(repoData, news, options = {}) {
   return `Today is ${new Date().toISOString().slice(0, 10)}.
 
 === GITHUB SCAN (${scanLabel}) ===
-${JSON.stringify(repoData, null, 2)}
+${JSON.stringify(repoData)}
 
 === LATEST TECH NEWS (titles only) ===
 ${summarizeNews(news, newsLimit)}
@@ -91,6 +91,9 @@ function trimForCloud(repoData, options = {}) {
     bodyChars = Number.isFinite(envBodyChars) && envBodyChars > 0 ? envBodyChars : 1500,
     includeRepoUrl = true,
     commentChars = 300,
+    maxComments = 3,
+    maxPrs = 4,
+    lean = false,
   } = options;
 
   return repoData.map(r => ({
@@ -104,19 +107,42 @@ function trimForCloud(repoData, options = {}) {
       labels: i.labels,
       url: i.url,
       ...(i.createdAt ? { created_at: String(i.createdAt).slice(0, 10) } : {}),
-      ...(i.comments ? { comments_count: i.comments } : {}),
+      ...(i.comments && !lean ? { comments_count: i.comments } : {}),
       ...(i.assignees && i.assignees.length ? { assignees: i.assignees } : {}),
-      ...(i.issueFitScore ? { fit_score: i.issueFitScore, fit_reason: i.issueFitReason } : {}),
+      ...(i.issueFitScore ? { fit_score: i.issueFitScore, ...(lean ? {} : { fit_reason: i.issueFitReason }) } : {}),
       ...(i.triageScore ? { triage_score: i.triageScore, triage_reason: i.triageReason } : {}),
-      ...(Array.isArray(i.recentConversation) && i.recentConversation.length ? {
-        recent_comments: i.recentConversation.map(c => `${c.author || 'someone'} (${String(c.createdAt || '').slice(0, 10)}): ${String(c.body || '').slice(0, commentChars)}`),
+      ...(maxComments && commentChars && Array.isArray(i.recentConversation) && i.recentConversation.length ? {
+        recent_comments: i.recentConversation.slice(-maxComments).map(c => `${c.author || 'someone'} (${String(c.createdAt || '').slice(0, 10)}): ${String(c.body || '').slice(0, commentChars)}`),
       } : {}),
-      ...(Array.isArray(i.linkedPRs) && i.linkedPRs.length ? {
-        linked_prs: i.linkedPRs.slice(0, 4).map(pr => `#${pr.number} ${pr.state}${pr.author ? ` by ${pr.author}` : ''}: ${pr.title}`),
+      ...(maxPrs && Array.isArray(i.linkedPRs) && i.linkedPRs.length ? {
+        linked_prs: i.linkedPRs.slice(0, maxPrs).map(pr => `#${pr.number} ${pr.state}${pr.author ? ` by ${pr.author}` : ''}${lean ? '' : `: ${pr.title}`}`),
       } : {}),
+      ...(i.claim && i.claim.stale ? { ownership: i.claim.reason } : {}),
       ...(i.hasNewActivity ? { note: 'recommended before; has new activity since' } : {}),
     })),
   }));
+}
+
+// Shrink the per-issue detail step by step until the whole scan fits the
+// provider's prompt budget. Every repo stays represented: losing detail on
+// each issue is better than the model never seeing half the watchlist.
+const FIT_LEVELS = [
+  { bodyChars: 1500, commentChars: 300, maxComments: 3, maxPrs: 4 },
+  { bodyChars: 700, commentChars: 200, maxComments: 2, maxPrs: 3 },
+  { bodyChars: 350, commentChars: 140, maxComments: 1, maxPrs: 2 },
+  { bodyChars: 180, commentChars: 100, maxComments: 1, maxPrs: 2, lean: true, includeRepoUrl: false },
+  { bodyChars: 100, commentChars: 0, maxComments: 0, maxPrs: 1, lean: true, includeRepoUrl: false, perRepo: 3 },
+  { bodyChars: 50, commentChars: 0, maxComments: 0, maxPrs: 0, lean: true, includeRepoUrl: false, perRepo: 2 },
+];
+
+function fitDigestInput(repoData, { issuesPerRepo, budgetChars }) {
+  let data = null;
+  for (const level of FIT_LEVELS) {
+    const { perRepo, ...trim } = level;
+    data = trimForCloud(repoData, { ...trim, issuesPerRepo: Math.min(issuesPerRepo, perRepo || issuesPerRepo) });
+    if (JSON.stringify(data).length <= budgetChars) break;
+  }
+  return data;
 }
 
 // Cloud providers and their fallback models are walked in order (providers.js).
@@ -131,14 +157,19 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
     medium: 'User requested medium effort: prioritize medium-effort implementation work, avoid tiny copy-only fixes and avoid large ambiguous rewrites.',
     default: '',
   };
-  const trimmedRepoData = trimForCloud(repoData, {
+  // Leave room for the news block and instructions around the scan data.
+  const tight = isTightBudget();
+  const budgetChars = promptBudget({ system: SYSTEM_PROMPT, maxTokens: 12000 }) - (tight ? 1400 : 2500);
+  const trimmedRepoData = fitDigestInput(repoData, {
     issuesPerRepo: options.issuesPerRepo || (digestMode === 'weekly' ? 6 : 4),
+    budgetChars,
   });
   const userMessage = buildUserMessage(trimmedRepoData, news, {
-    newsLimit: digestMode === 'weekly' ? 20 : 12,
+    newsLimit: tight ? 6 : (digestMode === 'weekly' ? 20 : 12),
     scanLabel: options.scanLabel || (digestMode === 'weekly' ? 'weekly top prioritized issues per repo' : 'top prioritized issues per repo'),
     opportunityLimit: options.opportunityLimit || (digestMode === 'weekly' ? 12 : 8),
-    codeSkeletonLimit: 700,
+    // On a tight budget the answer must stay short; deep analysis supplies the real skeleton later.
+    codeSkeletonLimit: tight ? 200 : 700,
     scanFocus: focusByMode[scanMode] || '',
     maxPerRepo: options.maxPerRepo || 0,
     contributorProfile: options.contributorProfile || '',
@@ -411,44 +442,65 @@ function buildDeterministicDigest(repoData, news, options = {}) {
 
 const TRIAGE_PROMPT = `You rank GitHub issues for an external contributor looking for their next pull request.
 For each candidate, judge how good a first contribution it is: clear ask, maintainer interest, narrow scope, not already taken, still relevant.
-Return ONLY JSON: { "ranked": [ { "url": "...", "score": 0-100, "reason": "short reason" } ] }. Include every candidate exactly once.`;
+Return ONLY JSON: { "ranked": [ { "id": 0, "score": 0-100, "reason": "at most 8 words" } ] }. Use the id from the first column. Include every candidate exactly once.`;
 
 // Cheap model ranking over all candidates so the digest is not limited to the
 // label-driven fit score. Returns a Map url → { score, reason }.
 async function triageIssues(repoData, options = {}) {
-  const { request = requestJson, maxCandidates = 60 } = options;
-  const candidates = [];
+  const { request = requestJson, maxCandidates = 120, budgetChars = promptBudget({ system: TRIAGE_PROMPT, maxTokens: 4000 }) } = options;
+  const all = [];
   for (const repo of repoData) {
     for (const issue of repo.issues || []) {
-      if (!issue.url || candidates.length >= maxCandidates) continue;
-      candidates.push({
-        url: issue.url,
-        repo: repo.repo,
-        title: issue.title,
-        labels: issue.labels || [],
-        opened: String(issue.createdAt || '').slice(0, 10),
-        updated: String(issue.updatedAt || '').slice(0, 10),
-        comments: issue.comments || 0,
-        body: String(issue.body || '').slice(0, 250),
-        latest_comment: issue.latestComment && issue.latestComment.body
-          ? `${issue.latestComment.author}: ${String(issue.latestComment.body).slice(0, 160)}`
-          : '',
-        fit_score: issue.issueFitScore || 0,
-      });
+      if (issue.url) all.push({ ...issue, repo: repo.repo });
     }
   }
-  if (candidates.length < 2) return new Map();
+  if (all.length < 2) return new Map();
+
+  // One compact line per candidate, referenced by a short id, so the whole
+  // field fits even a small prompt budget. Best heuristic fits go first in
+  // case the list still has to be cut.
+  all.sort((a, b) => Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0));
+  const header = 'id|repo#number|title|labels|updated|comments|fit|excerpt';
+  const base = issue => [
+    issue.repo ? `${issue.repo}#${issue.number}` : issue.url,
+    String(issue.title || '').replace(/\|/g, '/').slice(0, 80),
+    (issue.labels || []).slice(0, 3).join(','),
+    String(issue.updatedAt || '').slice(0, 10),
+    issue.comments || 0,
+    issue.issueFitScore || 0,
+  ].join('|');
+
+  const pool = all.slice(0, maxCandidates);
+  const baseSize = pool.reduce((n, issue, index) => n + base(issue).length + String(index).length + 3, 0);
+  const spare = Number.isFinite(budgetChars) ? budgetChars - header.length - 40 - baseSize : Infinity;
+  const excerptChars = Number.isFinite(spare) ? Math.max(0, Math.min(200, Math.floor(spare / pool.length))) : 200;
+
+  const lines = [];
+  let used = header.length + 40;
+  const included = [];
+  for (const issue of pool) {
+    const excerpt = excerptChars
+      ? String(issue.body || '').replace(/\s+/g, ' ').replace(/\|/g, '/').slice(0, excerptChars)
+      : '';
+    const line = `${included.length}|${base(issue)}|${excerpt}`;
+    if (Number.isFinite(budgetChars) && used + line.length + 1 > budgetChars) break;
+    used += line.length + 1;
+    lines.push(line);
+    included.push(issue);
+  }
+  if (included.length < 2) return new Map();
 
   const raw = await request({
     system: TRIAGE_PROMPT,
-    user: `Candidates:\n${JSON.stringify(candidates, null, 1)}`,
+    user: `Candidates (${included.length}), one per line:\n${header}\n${lines.join('\n')}`,
     maxTokens: 4000,
     temperature: 0.1,
   });
   const ranked = Array.isArray(raw && raw.ranked) ? raw.ranked : [];
   const result = new Map();
   for (const entry of ranked) {
-    const url = String(entry && entry.url || '').trim().toLowerCase();
+    const byId = entry && entry.id !== undefined && included[Number(entry.id)];
+    const url = String((byId && byId.url) || (entry && entry.url) || '').trim().toLowerCase();
     const score = Number(entry && entry.score);
     if (!url || !Number.isFinite(score)) continue;
     result.set(url, { score: Math.max(0, Math.min(100, score)), reason: String(entry.reason || '').slice(0, 200) });
@@ -457,6 +509,7 @@ async function triageIssues(repoData, options = {}) {
 }
 
 module.exports = {
+  fitDigestInput,
   requestJson,
   triageIssues,
   hasCloudProvider,
