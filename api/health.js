@@ -5,6 +5,7 @@ const { getCurrentRun, getRecentRuns } = require('../src/scan-state');
 const { isDispatchConfigured } = require('../src/scan-dispatch');
 const { listBots } = require('../src/bots');
 const { sendJson } = require('../src/http');
+const { describeProviders } = require('../src/providers');
 
 // Which settings this deployment actually received. Booleans and counts only —
 // never a secret's value — so it is safe on the public health endpoint and
@@ -18,7 +19,8 @@ function configStatus() {
     airtable: isAirtableConfigured(),
     subscribersTable: process.env.AIRTABLE_SUBSCRIBERS_TABLE || 'Subscribers',
     scanDispatch: isDispatchConfigured(),
-    modelProvider: Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY),
+    modelProvider: describeProviders().length > 0,
+    modelChain: describeProviders().map(provider => `${provider.name}: ${provider.models.join(' > ')}`),
     githubToken: Boolean(process.env.GITHUB_TOKEN),
   };
 }

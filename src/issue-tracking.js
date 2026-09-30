@@ -59,11 +59,16 @@ function annotateIssue(issue, seen) {
     return { ...issue, seenBefore: false, hasNewActivity: false };
   }
   const currentUpdatedAt = String(issue.updatedAt || '').trim();
-  const hasNewActivity = Boolean(currentUpdatedAt) && currentUpdatedAt !== tracked.issueUpdatedAt;
+  // Rows saved before the "Issue Updated At" column existed have no baseline.
+  // We cannot tell whether they changed, so treat them as unchanged and let
+  // the scan record today's timestamp as the baseline.
+  const needsBaseline = Boolean(currentUpdatedAt) && !tracked.issueUpdatedAt;
+  const hasNewActivity = Boolean(currentUpdatedAt) && !needsBaseline && currentUpdatedAt !== tracked.issueUpdatedAt;
   return {
     ...issue,
     seenBefore: true,
     hasNewActivity,
+    needsBaseline,
     previousUpdatedAt: tracked.issueUpdatedAt,
     trackedStatus: tracked.status,
     trackedRecordId: tracked.recordId,
@@ -293,8 +298,24 @@ function buildWeeklyReview(seen, options = {}) {
   return { days, added, done, in_progress: inProgress, stale, open_count: openCount };
 }
 
+// Records that need their first "Issue Updated At" written, capped so a large
+// backlog is backfilled over a few runs instead of hammering Airtable.
+function baselineEvents(repoData = [], limit = envNumber('DIGEST_BASELINE_WRITES', 40)) {
+  const events = [];
+  for (const repo of repoData) {
+    for (const issue of repo.issues || []) {
+      if (events.length >= limit) return events;
+      if (issue.needsBaseline && issue.trackedRecordId) {
+        events.push({ recordId: issue.trackedRecordId, issueUpdatedAt: issue.updatedAt });
+      }
+    }
+  }
+  return events;
+}
+
 module.exports = {
   annotateRepoData,
+  baselineEvents,
   buildWeeklyReview,
   isStale,
   buildChanges,

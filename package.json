@@ -10,6 +10,7 @@
     "bot": "node agent.js --bot",
     "set-webhook": "node scripts/set-webhook.js",
     "dedupe-airtable": "node scripts/dedupe-airtable.js",
+    "check-models": "node scripts/check-models.js",
     "dev": "node dev-server.js",
     "test": "node --test --test-concurrency=1"
   },

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   annotateRepoData,
+  baselineEvents,
   buildChanges,
   buildWeeklyReview,
   isStale,
@@ -242,4 +243,30 @@ test('buildWeeklyReview groups the tracked queue by what happened this week', ()
   assert.deepEqual(review.stale.map(e => e.title), ['Quiet']);
   assert.equal(review.open_count, 3);
   assert.equal(isStale({ status: 'Done', lastUpdated: '2026-01-01T00:00:00Z' }, { now }), false);
+});
+
+test('rows without a stored timestamp are unchanged, not updated, and get a baseline', () => {
+  const seen = seenWith([
+    { issueUrl: URL1, issueUpdatedAt: '' },
+    { issueUrl: URL2, issueUpdatedAt: '2026-08-20T00:00:00Z' },
+  ]);
+  const annotated = annotateRepoData([{
+    repo: 'owner/repo',
+    issues: [
+      { number: 1, url: URL1, updatedAt: '2026-09-01T00:00:00Z' },
+      { number: 2, url: URL2, updatedAt: '2026-09-01T00:00:00Z' },
+    ],
+  }], seen);
+
+  assert.equal(annotated[0].issues[0].hasNewActivity, false);
+  assert.equal(annotated[0].issues[0].needsBaseline, true);
+  assert.equal(annotated[0].issues[1].hasNewActivity, true);
+  assert.equal(annotated[0].issues[1].needsBaseline, false);
+
+  const { repoData, skipped } = selectIssuesForModel(annotated, { dedupe: true, includeClaimed: false });
+  assert.deepEqual(repoData[0].issues.map(issue => issue.number), [2]);
+  assert.equal(skipped.unchanged.length, 1);
+
+  assert.deepEqual(baselineEvents(annotated), [{ recordId: 'rec-1', issueUpdatedAt: '2026-09-01T00:00:00Z' }]);
+  assert.deepEqual(baselineEvents(annotated, 0), []);
 });

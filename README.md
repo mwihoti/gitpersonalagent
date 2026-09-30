@@ -10,7 +10,7 @@ Every morning at 8am Nairobi time the agent:
 
 1. **Scans GitHub** — pulls open issues from the repositories in your dashboard watchlist, prioritising `good first issue`, `help wanted`, and `bug` labels
 2. **Fetches tech news** — TechCrunch, Wired, Ars Technica, TLDR Tech, GitHub Blog, GitHub Releases, Hacker News
-3. **Analyses with a configured model provider** — prefers Gemini or Groq when keys are present, and falls back to Ollama locally
+3. **Analyses with a configured model provider** — walks a chain of Gemini, Groq, xAI Grok, and any OpenAI-compatible fallback, each with its own fallback models; uses Ollama locally when no cloud key is set
 4. **Saves to Airtable** — structured database of opportunities with effort level, suggested action, and starter code
 5. **Notifies via Telegram** — sends a digest with top opportunities and a short plan, with WhatsApp as fallback
 
@@ -239,6 +239,55 @@ belonging to the primary bot, so existing subscribers keep working.
 [`deploy/cloudflare.md`](deploy/cloudflare.md) for an honest comparison and a
 step-by-step migration plan. Summary: with scans on GitHub Actions, the host
 only serves a thin webhook, so Vercel is already sufficient.
+
+---
+
+## Model providers and fallbacks
+
+Set any subset of keys. Providers are tried in `MODEL_PROVIDERS` order, and
+each provider walks its model list left to right before handing over.
+
+| Provider | Key | Models variable | Default models |
+|---|---|---|---|
+| Google Gemini | `GEMINI_API_KEY` | `GEMINI_MODELS` | `gemini-2.5-flash-lite`, `gemini-2.5-flash` |
+| Groq | `GROQ_API_KEY` | `GROQ_MODELS` | `openai/gpt-oss-120b`, `qwen/qwen3.6-27b`, `llama-3.3-70b-versatile` |
+| xAI Grok | `XAI_API_KEY` (or `GROK_API_KEY`) | `XAI_MODELS` | `grok-4.3`, `grok-4.5` |
+| Anything OpenAI-compatible | `FALLBACK_API_KEY` + `FALLBACK_API_URL` | `FALLBACK_MODELS` | none, you choose |
+
+`MODEL_PROVIDERS` defaults to `gemini,groq,xai,fallback`. Put your most
+reliable provider first, for example `MODEL_PROVIDERS=groq,xai,gemini`.
+
+How failures are handled:
+
+- **401 or 403** (bad key, blocked project): the whole provider is skipped.
+- **404, 429, 5xx, timeout, or unparseable answer**: the next model is tried,
+  then the next provider. A 404 logs a hint to update that provider's models
+  variable, since it usually means the model was retired.
+- **413**: one retry with a compacted prompt.
+- **Everything failed**: the scan still completes with the heuristic digest.
+
+The fallback slot takes any endpoint that speaks the OpenAI chat-completions
+protocol. OpenRouter example:
+
+```env
+FALLBACK_API_URL=https://openrouter.ai/api/v1/chat/completions
+FALLBACK_API_KEY=sk-or-...
+FALLBACK_MODELS=meta-llama/llama-3.3-70b-instruct,mistralai/mistral-small
+```
+
+Check the whole chain before relying on it:
+
+```bash
+npm run check-models
+```
+
+It sends a one-line prompt to every configured model and prints which ones
+answer. `/api/health` also reports the active chain (names only, never keys).
+
+On GitHub Actions, keys are environment **secrets** (`XAI_API_KEY`,
+`FALLBACK_API_KEY`) and the rest are repository **variables**
+(`MODEL_PROVIDERS`, `GEMINI_MODELS`, `GROQ_MODELS`, `XAI_MODELS`,
+`FALLBACK_API_URL`, `FALLBACK_MODELS`).
 
 ---
 

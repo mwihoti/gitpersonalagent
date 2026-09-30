@@ -1,0 +1,125 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const KEYS = ['GEMINI_API_KEY', 'GROQ_API_KEY', 'XAI_API_KEY', 'GROK_API_KEY', 'FALLBACK_API_KEY', 'FALLBACK_API_URL',
+  'FALLBACK_MODELS', 'MODEL_PROVIDERS', 'GEMINI_MODELS', 'GROQ_MODELS', 'XAI_MODELS', 'GROK_MODELS'];
+
+function setup(t, env, handler) {
+  const saved = Object.fromEntries(KEYS.map(key => [key, process.env[key]]));
+  for (const key of KEYS) delete process.env[key];
+  Object.assign(process.env, env);
+  const prevFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    calls.push({ url: String(url), model: body.model, body, auth: opts.headers.Authorization });
+    return handler({ url: String(url), model: body.model, body });
+  };
+  t.after(() => {
+    global.fetch = prevFetch;
+    for (const key of KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+  return calls;
+}
+
+const ok = content => ({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) });
+const fail = (status, text = 'nope') => ({ ok: false, status, text: async () => text });
+const quiet = { log() {}, warn() {} };
+const providers = require('../src/providers');
+
+test('chain walks fallback models, then the next provider', async t => {
+  const calls = setup(t, {
+    GROQ_API_KEY: 'g',
+    GROQ_MODELS: 'retired-model, second-model',
+    XAI_API_KEY: 'x',
+    XAI_MODELS: 'grok-a',
+  }, ({ model }) => {
+    if (model === 'retired-model') return fail(404, 'The model has been decommissioned');
+    if (model === 'second-model') return fail(429, 'rate limited');
+    return ok('{"answer":42}');
+  });
+
+  const result = await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+
+  assert.deepEqual(calls.map(c => c.model), ['retired-model', 'second-model', 'grok-a']);
+  assert.equal(result.provider, 'xai');
+  assert.equal(result.model, 'grok-a');
+  assert.deepEqual(result.value, { answer: 42 });
+  assert.match(calls[2].url, /api\.x\.ai/);
+  assert.equal(calls[2].auth, 'Bearer x');
+  assert.deepEqual(calls[2].body.response_format, { type: 'json_object' });
+  assert.equal(calls[0].body.response_format, undefined);
+});
+
+test('a rejected key skips the whole provider; bad JSON moves to the next model', async t => {
+  const calls = setup(t, {
+    GEMINI_API_KEY: 'blocked',
+    GEMINI_MODELS: 'gem-1,gem-2',
+    GROQ_API_KEY: 'g',
+    GROQ_MODELS: 'm1,m2',
+  }, ({ url, model }) => {
+    if (url.includes('googleapis')) return fail(403, 'Your project has been denied access');
+    return model === 'm1' ? ok('not json at all') : ok('{"fine":true}');
+  });
+
+  const result = await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+
+  assert.deepEqual(calls.map(c => c.model), ['gem-1', 'm1', 'm2']);
+  assert.equal(result.model, 'm2');
+});
+
+test('MODEL_PROVIDERS reorders the chain and the generic fallback slot works', async t => {
+  const calls = setup(t, {
+    MODEL_PROVIDERS: 'fallback, grok, groq',
+    GROK_API_KEY: 'x',
+    GROQ_API_KEY: 'g',
+    FALLBACK_API_KEY: 'or',
+    FALLBACK_API_URL: 'https://openrouter.ai/api/v1/chat/completions',
+    FALLBACK_MODELS: 'vendor/model-a',
+  }, ({ url }) => (url.includes('openrouter') ? fail(500) : ok('{"from":"grok"}')));
+
+  assert.deepEqual(providers.describeProviders().map(p => p.name), ['fallback', 'xai', 'groq']);
+  const result = await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+
+  assert.equal(calls[0].url, 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(calls[0].model, 'vendor/model-a');
+  assert.equal(result.provider, 'xai');
+  assert.equal(calls.length, 2);
+});
+
+test('413 retries once with a compact payload; total failure lists every attempt', async t => {
+  let first = true;
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'm1' }, () => {
+    if (first) { first = false; return fail(413, 'too large'); }
+    return fail(500, 'boom');
+  });
+
+  await assert.rejects(
+    () => providers.runChain({ system: 's', user: 'line\n      indented '.repeat(2000), parse: JSON.parse, logger: quiet }),
+    /All model providers failed: Groq\/m1: 500 boom/,
+  );
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].body.messages[1].content.length <= 9000);
+});
+
+test('a fallback key without URL or models is ignored, and no keys means no cloud provider', async t => {
+  setup(t, { FALLBACK_API_KEY: 'k' }, () => ok('{}'));
+  const warnings = [];
+  const prevWarn = console.warn;
+  console.warn = message => warnings.push(message);
+  t.after(() => { console.warn = prevWarn; });
+
+  assert.equal(providers.hasCloudProvider(), false);
+  assert.match(warnings[0], /FALLBACK_API_URL is missing/);
+  await assert.rejects(() => providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet }), /No cloud model provider/);
+});
+
+test('probeModels reports which configured models answer', async t => {
+  setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'good,dead' }, ({ model }) => (model === 'good' ? ok('{"ok":true}') : fail(404, 'model not found')));
+  const results = await providers.probeModels();
+  assert.deepEqual(results.map(r => [r.model, r.ok, r.status]), [['good', true, 200], ['dead', false, 404]]);
+});
