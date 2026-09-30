@@ -176,6 +176,19 @@ The daily digest still runs via the Vercel cron already defined in `vercel.json`
 
    Useful flags: `node scripts/set-webhook.js --info` (status), `--delete` (revert to polling).
 
+   **If your host marks the tokens and secret as sensitive** (Vercel does, so
+   `vercel env pull` returns `[SENSITIVE]`), let the deployment register itself.
+   It already holds the right values, so nothing has to be copied:
+
+   ```bash
+   curl https://your-app.vercel.app/api/setup-webhook            # show status
+   curl -X POST https://your-app.vercel.app/api/setup-webhook    # register all bots
+   ```
+
+   Add `-H "X-API-Key: $DAN_AGENT_API_KEY"` when the dashboard key is set. The
+   script refuses to register from a shell whose `.env` has fewer bots or no
+   secret compared with the deployment, because that would silence the bot.
+
 #### How `/scan` avoids the serverless timeout
 
 A full scan (GitHub + news + LLM) routinely runs longer than a serverless

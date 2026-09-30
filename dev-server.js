@@ -12,6 +12,7 @@ const repositoryHandler = require('./api/repositories/[id]');
 const repoIssuesHandler = require('./api/repo-issues');
 const issueAnalysisHandler = require('./api/issue-analysis');
 const issueStatusHandler = require('./api/issue-status');
+const setupWebhookHandler = require('./api/setup-webhook');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);
@@ -64,6 +65,9 @@ async function routeApi(req, res, pathname, query) {
   }
   if (pathname === '/api/issue-status') {
     return issueStatusHandler(req, res);
+  }
+  if (pathname === '/api/setup-webhook') {
+    return setupWebhookHandler(req, res);
   }
   if (pathname === '/api/repositories') {
     return repositoriesHandler(req, res);
