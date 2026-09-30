@@ -250,7 +250,7 @@ each provider walks its model list left to right before handing over.
 | Provider | Key | Models variable | Default models |
 |---|---|---|---|
 | Google Gemini | `GEMINI_API_KEY` | `GEMINI_MODELS` | `gemini-2.5-flash-lite`, `gemini-2.5-flash` |
-| Groq | `GROQ_API_KEY` | `GROQ_MODELS` | `openai/gpt-oss-120b`, `qwen/qwen3.6-27b`, `llama-3.3-70b-versatile` |
+| Groq | `GROQ_API_KEY` | `GROQ_MODELS` | `openai/gpt-oss-120b`, `openai/gpt-oss-20b` |
 | xAI Grok | `XAI_API_KEY` (or `GROK_API_KEY`) | `XAI_MODELS` | `grok-4.3`, `grok-4.5` |
 | Anything OpenAI-compatible | `FALLBACK_API_KEY` + `FALLBACK_API_URL` | `FALLBACK_MODELS` | none, you choose |
 
@@ -282,7 +282,11 @@ npm run check-models
 ```
 
 It sends a one-line prompt to every configured model and prints which ones
-answer. `/api/health` also reports the active chain (names only, never keys).
+answer. Add `-- --list` to also print every model id your keys can use, which
+is the reliable way to choose fallbacks since providers retire models often.
+Groq's gpt-oss models are reasoning models; requests to them use
+`reasoning_effort: low` so reasoning cannot use up the output budget
+(`GROQ_REASONING_EFFORT=medium|high|off` overrides). `/api/health` also reports the active chain (names only, never keys).
 
 On GitHub Actions, keys are environment **secrets** (`XAI_API_KEY`,
 `FALLBACK_API_KEY`) and the rest are repository **variables**

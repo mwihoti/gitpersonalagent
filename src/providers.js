@@ -46,9 +46,10 @@ function providerRegistry() {
       label: 'Groq',
       url: 'https://api.groq.com/openai/v1/chat/completions',
       apiKey: env('GROQ_API_KEY'),
-      // llama-3.3-70b-versatile was retired for free/developer tiers on
-      // 2026-08-16; it stays last for enterprise accounts that still have it.
-      models: list(env('GROQ_MODELS'), ['openai/gpt-oss-120b', 'qwen/qwen3.6-27b', 'llama-3.3-70b-versatile']),
+      // Verified with `npm run check-models` on 2026-09-30. Retired names
+      // (llama-3.3-70b-versatile, llama-3.1-8b-instant) are gone; run
+      // `npm run check-models -- --list` to see what your key can use.
+      models: list(env('GROQ_MODELS'), ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']),
       jsonMode: false,
       maxTokensCap: 8192,
     },
@@ -102,7 +103,16 @@ function firstLine(text, max = 200) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-async function callModel(provider, model, { system, user, maxTokens, temperature, timeoutMs, jsonMode }) {
+// gpt-oss and similar reasoning models spend output tokens on hidden
+// reasoning first. Low effort leaves the budget for the actual answer.
+function reasoningEffort(provider, model) {
+  const configured = env(`${provider.name.toUpperCase()}_REASONING_EFFORT`, 'MODEL_REASONING_EFFORT').toLowerCase();
+  if (configured === 'off' || configured === 'none') return '';
+  if (provider.name === 'groq' && /gpt-oss/i.test(model)) return configured || 'low';
+  return '';
+}
+
+async function callModel(provider, model, { system, user, maxTokens, temperature, timeoutMs, jsonMode, plain = false }) {
   const body = {
     model,
     messages: [
@@ -112,7 +122,9 @@ async function callModel(provider, model, { system, user, maxTokens, temperature
     temperature,
     max_tokens: Math.min(maxTokens, provider.maxTokensCap || maxTokens),
   };
-  if (jsonMode) body.response_format = { type: 'json_object' };
+  if (jsonMode && !plain) body.response_format = { type: 'json_object' };
+  const effort = plain ? '' : reasoningEffort(provider, model);
+  if (effort) body.reasoning_effort = effort;
 
   const res = await fetch(provider.url, {
     method: 'POST',
@@ -145,13 +157,14 @@ async function runChain({ system, user, parse, maxTokens = 8000, temperature = 0
     for (const model of provider.models) {
       if (skipProvider) break;
       let message = user;
-      let jsonMode = provider.jsonMode;
+      const jsonMode = provider.jsonMode;
+      let plain = false;
 
       for (let round = 0; round < 2; round += 1) {
         logger.log(`  Sending to ${provider.label} (${model}${round ? ', retry' : ''})...`);
         let result;
         try {
-          result = await callModel(provider, model, { system, user: message, maxTokens, temperature, timeoutMs, jsonMode });
+          result = await callModel(provider, model, { system, user: message, maxTokens, temperature, timeoutMs, jsonMode, plain });
         } catch (error) {
           attempts.push(`${provider.label}/${model}: ${firstLine(error.message, 120)}`);
           logger.warn(`  ${provider.label} ${model} request failed (${firstLine(error.message, 120)}) — trying next...`);
@@ -160,6 +173,7 @@ async function runChain({ system, user, parse, maxTokens = 8000, temperature = 0
 
         if (result.ok) {
           try {
+            if (!String(result.content || '').trim()) throw new Error('empty answer (output budget spent on reasoning?)');
             return { value: parse(result.content), provider: provider.name, model };
           } catch (error) {
             attempts.push(`${provider.label}/${model}: unusable answer (${firstLine(error.message, 80)})`);
@@ -179,9 +193,11 @@ async function runChain({ system, user, parse, maxTokens = 8000, temperature = 0
           message = compact(user);
           continue;
         }
-        if (result.status === 400 && jsonMode && /response_format|json/i.test(result.error) && round === 0) {
-          logger.warn(`  ${provider.label} ${model}: JSON mode not accepted — retrying without it...`);
-          jsonMode = false;
+        // A 400 can mean an optional parameter (JSON mode, reasoning effort)
+        // is not supported by this model: retry once with a bare request.
+        if (result.status === 400 && !plain && round === 0 && !/model_not_found|does not exist/i.test(result.error)) {
+          logger.warn(`  ${provider.label} ${model}: request rejected (${result.error.slice(0, 100)}) — retrying without optional parameters...`);
+          plain = true;
           continue;
         }
 
@@ -209,17 +225,19 @@ async function probeModels({ timeoutMs = 30_000 } = {}) {
         const result = await callModel(provider, model, {
           system: 'You are a health check.',
           user: 'Reply with exactly: {"ok":true}',
-          maxTokens: 50,
+          maxTokens: 400,
           temperature: 0,
           timeoutMs,
           jsonMode: false,
         });
+        const answer = result.ok ? firstLine(result.content, 60) : '';
         results.push({
           provider: provider.name,
           model,
-          ok: result.ok,
+          // Reachable but silent is not usable for a scan.
+          ok: result.ok && Boolean(answer),
           status: result.ok ? 200 : result.status,
-          detail: result.ok ? firstLine(result.content, 60) : result.error,
+          detail: result.ok ? (answer || 'reachable, but returned an empty answer') : result.error,
           ms: Date.now() - started,
         });
       } catch (error) {
@@ -228,6 +246,33 @@ async function probeModels({ timeoutMs = 30_000 } = {}) {
     }
   }
   return results;
+}
+
+// Model ids each configured key can actually use (GET <base>/models).
+async function listAvailableModels({ timeoutMs = 20_000 } = {}) {
+  const out = [];
+  for (const provider of activeProviders()) {
+    const url = provider.url.replace(/\/chat\/completions\/?$/, '/models');
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${provider.apiKey}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        out.push({ provider: provider.name, label: provider.label, models: [], error: `${res.status} ${firstLine(await res.text().catch(() => ''), 120)}` });
+        continue;
+      }
+      const data = await res.json();
+      const models = (data.data || data.models || [])
+        .map(item => String(item.id || item.name || '').replace(/^models\//, ''))
+        .filter(Boolean)
+        .sort();
+      out.push({ provider: provider.name, label: provider.label, models, error: '' });
+    } catch (error) {
+      out.push({ provider: provider.name, label: provider.label, models: [], error: firstLine(error.message, 120) });
+    }
+  }
+  return out;
 }
 
 // Safe-to-expose summary for /api/health and logs: names only, never keys.
@@ -239,6 +284,7 @@ module.exports = {
   activeProviders,
   describeProviders,
   hasCloudProvider,
+  listAvailableModels,
   probeModels,
   runChain,
 };
