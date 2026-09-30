@@ -372,7 +372,8 @@ async function filterUnchangedDigest(digest, seenMap = null) {
     if (!issueUrl || !seen.has(issueUrl)) return true;
     const previousUpdatedAt = seen.get(issueUrl).issueUpdatedAt;
     const currentUpdatedAt = String(item.issue_updated_at || '').trim();
-    return currentUpdatedAt && previousUpdatedAt !== currentUpdatedAt;
+    // No stored baseline means we cannot claim it changed.
+    return Boolean(currentUpdatedAt && previousUpdatedAt && previousUpdatedAt !== currentUpdatedAt);
   });
 
   return {

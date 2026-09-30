@@ -36,6 +36,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}          # xAI Grok (optional)
+          FALLBACK_API_KEY: ${{ secrets.FALLBACK_API_KEY }}  # any OpenAI-compatible endpoint (optional)
+          FALLBACK_API_URL: ${{ vars.FALLBACK_API_URL }}
+          FALLBACK_MODELS: ${{ vars.FALLBACK_MODELS }}
+          MODEL_PROVIDERS: ${{ vars.MODEL_PROVIDERS }}       # order, e.g. groq,xai,gemini
+          GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
+          GROQ_MODELS: ${{ vars.GROQ_MODELS }}
+          XAI_MODELS: ${{ vars.XAI_MODELS }}
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}

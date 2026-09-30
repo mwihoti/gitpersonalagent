@@ -497,7 +497,9 @@ async function runScan(options = {}) {
       } catch (e) {
         logger.warn(`  Persistence skipped: ${e.message}`);
       }
-      tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || [])])
+      const baselines = tracking.baselineEvents(annotated);
+      if (baselines.length) logger.log(`  Recording a first activity baseline for ${baselines.length} older records`);
+      tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || []), ...baselines])
         .catch(e => logger.warn(`  Record updates skipped: ${e.message}`)));
     }
     if (notify) {

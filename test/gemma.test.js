@@ -113,7 +113,7 @@ test('a Gemini 403 falls through to Groq, and a dead provider chain still yields
   const digest = await analyzeDigestWithModel(repoData, news, {});
 
   assert.equal(calls.filter(u => u.includes('googleapis')).length, 1, 'stops after the first Gemini 403');
-  assert.match(digest.quick_plan, /groq saw llama/);
+  assert.match(digest.quick_plan, /groq saw openai\/gpt-oss-120b/);
 
   // Every provider down: deterministic digest, not a crash.
   global.fetch = async () => ({ ok: false, status: 500, text: async () => 'down' });

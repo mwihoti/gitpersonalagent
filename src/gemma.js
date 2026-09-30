@@ -1,5 +1,6 @@
 'use strict';
 const config = require('./config');
+const { runChain, hasCloudProvider } = require('./providers');
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const EFFORT_VALUES = new Set(['low', 'medium', 'high']);
 
@@ -118,8 +119,9 @@ function trimForCloud(repoData, options = {}) {
   }));
 }
 
-// Fallback chain (cloud): gemini-2.5-flash-lite → gemini-2.5-flash → Groq.
-// Falls back to local Ollama when no cloud keys are set.
+// Cloud providers and their fallback models are walked in order (providers.js).
+// Local Ollama is used when no cloud key is set; if everything fails the
+// deterministic digest keeps the scan alive.
 async function analyzeDigestWithModel(repoData, news, options = {}) {
   const digestMode = process.env.DIGEST_MODE === 'weekly' ? 'weekly' : 'daily';
   const scanMode = options.scanMode || 'default';
@@ -142,18 +144,14 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
     contributorProfile: options.contributorProfile || '',
   });
 
-  try {
-    if (process.env.GEMINI_API_KEY) {
-      return await analyzeWithGemini(userMessage);
+  if (hasCloudProvider()) {
+    try {
+      const { value } = await runChain({ system: SYSTEM_PROMPT, user: userMessage, parse: parseJSON, maxTokens: 12000 });
+      return value;
+    } catch (error) {
+      console.warn(`  Model analysis failed, using deterministic fallback: ${error.message.split('\n')[0].slice(0, 400)}`);
     }
-    if (process.env.GROQ_API_KEY) {
-      return await analyzeWithGroq(userMessage);
-    }
-  } catch (error) {
-    console.warn(`  Model analysis failed, using deterministic fallback: ${error.message.split('\n')[0]}`);
-  }
-
-  if (!process.env.GEMINI_API_KEY && !process.env.GROQ_API_KEY) {
+  } else {
     try {
       return await analyzeWithOllama(buildUserMessage(repoData, news, {
         scanLabel: options.scanLabel,
@@ -170,123 +168,6 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
   return buildDeterministicDigest(repoData, news, {
     opportunityLimit: options.opportunityLimit,
   });
-}
-
-// Try each Gemini model in order; on 503 move to the next.
-// If all are unavailable, fall back to Groq (if key is set).
-const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
-
-async function analyzeWithGemini(userMessage, options = {}) {
-  const system = options.system || SYSTEM_PROMPT;
-  const parse = options.parse || parseJSON;
-  let lastGeminiError = '';
-  for (const model of GEMINI_MODELS) {
-    console.log(`  Sending to Gemini (${model})...`);
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: userMessage },
-          ],
-          temperature: options.temperature ?? 0.3,
-          max_tokens: options.maxTokens || 12000,
-          response_format: { type: 'json_object' },
-        }),
-        signal: AbortSignal.timeout(options.timeoutMs || 120_000),
-      }
-    );
-
-    if (res.ok) {
-      const data = await res.json();
-      const raw = data.choices?.[0]?.message?.content || '';
-      try {
-        return parse(raw);
-      } catch (error) {
-        console.warn(`  Gemini ${model} returned invalid JSON — trying fallback model/provider...`);
-        continue;
-      }
-    }
-
-    const errText = await res.text();
-
-    if (res.status === 503 || res.status === 429) {
-      console.warn(`  Gemini ${model} unavailable (${res.status}) — trying next...`);
-      continue;
-    }
-
-    // Key/project problems (400/401/403/404) affect every Gemini model alike:
-    // stop trying Gemini and let Groq take over instead of failing the scan.
-    lastGeminiError = `Gemini error: ${res.status} ${errText.slice(0, 300)}`;
-    console.warn(`  ${lastGeminiError.split('\n')[0]} — skipping remaining Gemini models`);
-    break;
-  }
-
-  if (process.env.GROQ_API_KEY) {
-    console.warn('  Gemini did not produce a usable digest — falling back to Groq...');
-    return analyzeWithGroq(userMessage, options);
-  }
-
-  throw new Error(lastGeminiError || 'Gemini did not produce a usable digest and GROQ_API_KEY is not set');
-}
-
-async function analyzeWithGroq(userMessage, options = {}) {
-  const system = options.system || SYSTEM_PROMPT;
-  const parse = options.parse || parseJSON;
-  const model = 'llama-3.3-70b-versatile';
-  const attempts = [
-    { label: 'full', message: userMessage },
-    {
-      label: 'compact',
-      message: userMessage
-        .replace(/\n\s{2,}/g, '\n')
-        .slice(0, 9000),
-    },
-  ];
-
-  for (const attempt of attempts) {
-    console.log(`  Sending to Groq (${model}, ${attempt.label})...`);
-
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: attempt.message },
-        ],
-        temperature: options.temperature ?? 0.3,
-        max_tokens: Math.min(options.maxTokens || 4096, 8192),
-      }),
-      signal: AbortSignal.timeout(options.timeoutMs || 120_000),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const raw = data.choices?.[0]?.message?.content || '';
-      return parse(raw);
-    }
-
-    const err = await res.text();
-    if (res.status === 413 && attempt.label !== 'compact') {
-      console.warn('  Groq request too large — retrying with compact payload...');
-      continue;
-    }
-
-    throw new Error(`Groq error: ${res.status} ${err}`);
-  }
 }
 
 async function analyzeWithOllama(userMessage, options = {}) {
@@ -322,10 +203,6 @@ async function analyzeWithOllama(userMessage, options = {}) {
   return parse(raw);
 }
 
-function hasCloudProvider() {
-  return Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY);
-}
-
 // Extract and parse a JSON object from raw model output without digest validation.
 function parseLooseJson(raw) {
   const stripped = String(raw || '').replace(/```(?:json)?/gi, '').trim();
@@ -342,12 +219,13 @@ function parseLooseJson(raw) {
 }
 
 // Generic structured call used by per-issue analysis. Same provider chain as
-// the digest: Gemini → Groq → Ollama. Throws when no provider is usable.
+// the digest (see providers.js), or local Ollama when no cloud key is set.
 async function requestJson({ system, user, maxTokens = 6000, timeoutMs = 120_000, temperature = 0.2 }) {
-  const options = { system, maxTokens, timeoutMs, temperature, parse: parseLooseJson };
-  if (process.env.GEMINI_API_KEY) return analyzeWithGemini(user, options);
-  if (process.env.GROQ_API_KEY) return analyzeWithGroq(user, options);
-  return analyzeWithOllama(user, options);
+  if (hasCloudProvider()) {
+    const { value } = await runChain({ system, user, parse: parseLooseJson, maxTokens, timeoutMs, temperature });
+    return value;
+  }
+  return analyzeWithOllama(user, { system, maxTokens, timeoutMs, temperature, parse: parseLooseJson });
 }
 
 function parseJSON(raw) {
