@@ -78,7 +78,7 @@ async function main() {
     const result = await api(bot.token, 'setWebhook', {
       url: webhookUrl,
       secret_token: secret || undefined,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: !keepPending,
     });
 

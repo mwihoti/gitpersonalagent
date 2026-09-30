@@ -6,6 +6,11 @@ const {
   removeSubscriber,
 } = require("./subscribers");
 const { listBots, primaryBot } = require("./bots");
+const { formatAge, normalizeUrl } = require("./issue-tracking");
+const { updateOpportunity } = require("./airtable");
+const { analyzeIssue } = require("./issue-analysis");
+const { parseIssueUrl } = require("./github");
+const { DISMISS_REASONS } = require("./feedback");
 
 // ─── WhatsApp via CallMeBot ───────────────────────────────────────────────────
 
@@ -120,19 +125,41 @@ async function unsubscribeTelegramChat(chatId, botId) {
   return removeSubscriber(chatId, botId);
 }
 
-async function sendTelegramToChat(chatId, message, botToken) {
+function messageText(message) {
+  return typeof message === "string" ? message : String((message && message.text) || "");
+}
+
+async function telegramCall(token, method, payload) {
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15_000),
+  });
+  return res;
+}
+
+// message: string or { text, replyMarkup }
+async function sendTelegramToChat(chatId, message, botToken, options = {}) {
   const token = botToken || config.telegram.botToken;
   if (!token || !chatId) return false;
 
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const text = messageText(message);
+  const payload = { chat_id: chatId, text };
+  if (message && typeof message === "object" && message.replyMarkup) {
+    payload.reply_markup = message.replyMarkup;
+  }
+  if (options.parseMode) {
+    payload.parse_mode = options.parseMode;
+    payload.disable_web_page_preview = true;
+  }
+
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-      }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
     if (res.ok) {
@@ -140,6 +167,15 @@ async function sendTelegramToChat(chatId, message, botToken) {
       return true;
     }
     const err = await res.json();
+    // A formatting error in one message should not lose the whole digest:
+    // retry once as plain text.
+    if (options.parseMode && res.status === 400) {
+      console.warn(`  Telegram rejected formatted message (${err.description}); retrying as plain text`);
+      const plain = message && typeof message === "object"
+        ? { ...message, text: stripHtml(text) }
+        : stripHtml(text);
+      return sendTelegramToChat(chatId, plain, botToken, {});
+    }
     console.warn(`  Telegram failed: ${err.description}`);
     return false;
   } catch (e) {
@@ -149,7 +185,7 @@ async function sendTelegramToChat(chatId, message, botToken) {
 }
 
 // Sends to every configured bot's own audience, each through its own token.
-async function sendTelegram(message) {
+async function sendTelegram(message, options = {}) {
   const bots = listBots();
   if (!bots.length) return false;
 
@@ -161,7 +197,7 @@ async function sendTelegram(message) {
     if (!chatIds.length) continue;
 
     const results = await Promise.all(
-      chatIds.map((chatId) => sendTelegramToChat(chatId, message, bot.token)),
+      chatIds.map((chatId) => sendTelegramToChat(chatId, message, bot.token, options)),
     );
     sentAny = sentAny || results.some(Boolean);
   }
@@ -187,6 +223,8 @@ async function setTelegramCommands(botToken) {
               description: "Check whether the bot is running",
             },
             { command: "help", description: "Show available commands" },
+            { command: "analyze", description: "Deep read of one issue: /analyze <issue url>" },
+            { command: "pr", description: "Link your PR: /pr <issue url> <pr url>" },
             {
               command: "scan",
               description: "Run scan: /scan all, /scan goodfirst, /scan medium",
@@ -205,15 +243,16 @@ async function setTelegramCommands(botToken) {
 
 // ─── Unified send (Telegram first, WhatsApp as fallback) ─────────────────────
 
-async function sendNotification(message) {
+async function sendNotification(message, options = {}) {
   const messages = Array.isArray(message) ? message : [message];
   let sentAny = false;
 
   for (const item of messages) {
-    const sent = await sendTelegram(item);
+    const sent = await sendTelegram(item, options);
     sentAny = sentAny || sent;
     if (!sent) {
-      await sendWhatsApp(item);
+      const text = messageText(item);
+      await sendWhatsApp(options.parseMode ? stripHtml(text) : text);
     }
   }
 
@@ -221,8 +260,13 @@ async function sendNotification(message) {
 }
 
 // ─── Message formatter ────────────────────────────────────────────────────────
+//
+// Digest messages are Telegram HTML: titles are links, commands are <code>.
+// Every piece of model or GitHub text goes through html() so stray < > & in
+// issue titles cannot break the message.
 
 const TELEGRAM_MESSAGE_LIMIT = 3900;
+const DIGEST_PARSE_MODE = "HTML";
 
 function cleanText(value) {
   return String(value || "")
@@ -243,138 +287,419 @@ function effortLabel(value) {
   return "MED";
 }
 
-function formatOpportunity(item, index) {
-  const lines = [
-    `${index + 1}. [${effortLabel(item.effort)}] ${truncate(item.opportunity, 90)}`,
-    `Repo: ${cleanText(item.repo) || "Unknown repo"}`,
-  ];
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
-  if (item.issue_url) {
-    lines.push(`Issue: ${cleanText(item.issue_url)}`);
+// Escape, then render `inline code` spans from model text as <code>.
+function html(value) {
+  return escapeHtml(cleanText(value)).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+function stripHtml(value) {
+  return String(value || "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function isEmptyTip(value) {
+  const text = cleanText(value).toLowerCase().replace(/[.!]+$/, "");
+  return !text || ["n/a", "na", "none", "not applicable", "no tip", "-", "tbd"].includes(text);
+}
+
+function link(title, url, limit = 100) {
+  const text = html(truncate(title, limit));
+  return url ? `<a href="${escapeHtml(cleanText(url))}">${text}</a>` : text;
+}
+
+function envLimit(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+// "opened 2y ago · last comment 3mo ago by alice · unassigned · open PR #12"
+function activityLine(item) {
+  const parts = [];
+  if (item.issue_created_at) parts.push(`opened ${formatAge(item.issue_created_at)}`);
+  const comment = item.latest_comment;
+  if (comment && comment.createdAt) {
+    parts.push(`last comment ${formatAge(comment.createdAt)}${comment.author ? ` by ${comment.author}` : ""}`);
+  } else if (item.issue_updated_at) {
+    parts.push(`updated ${formatAge(item.issue_updated_at)}`);
   }
+  const assignees = item.assignees || [];
+  if (assignees.length) parts.push(`assigned to ${assignees.join(", ")}`);
+  else if (item.issue_created_at || item.issue_updated_at) parts.push("unassigned");
+  const openPRs = (item.linked_prs || []).filter((pr) => pr.state === "open" && pr.sameRepo !== false);
+  if (openPRs.length) parts.push(`open PR #${openPRs.map((pr) => pr.number).join(", #")}`);
+  return html(parts.join(" · "));
+}
 
-  if (item.why_it_qualifies) {
-    lines.push(`Why: ${truncate(item.why_it_qualifies, 180)}`);
-  }
+function indexLine(item, index) {
+  const first = `${index}. [${effortLabel(item.effort)}] ${link(item.opportunity, item.issue_url, 90)}`;
+  const meta = [html(item.repo || "Unknown repo"), activityLine(item)].filter(Boolean).join(" · ");
+  return `${first}\n    ${meta}`;
+}
 
-  if (item.suggested_action) {
-    lines.push(`Next: ${truncate(item.suggested_action, 220)}`);
-  }
+function commentLine(comment) {
+  if (!comment || !comment.body) return "";
+  const who = comment.author ? `${comment.author}: ` : "";
+  return html(`${who}“${truncate(comment.body, 160)}”`);
+}
 
-  if (item.clarity_tip) {
-    lines.push(`Check: ${truncate(item.clarity_tip, 100)}`);
-  }
-
-  return lines.join("\n");
+function trackedLine(entry) {
+  const meta = [entry.repo, entry.reason, entry.tracked_since ? `tracked since ${entry.tracked_since}` : ""]
+    .filter(Boolean)
+    .join(" · ");
+  return `• ${link(entry.title, entry.issue_url, 80)}\n    ${html(meta)}`;
 }
 
 function fitMessage(message, footer) {
   if (message.length <= TELEGRAM_MESSAGE_LIMIT) return message;
 
   const allowed = TELEGRAM_MESSAGE_LIMIT - footer.length - 2;
-  return `${message.slice(0, Math.max(0, allowed)).trim()}\n\n${footer}`;
+  let cut = message.slice(0, Math.max(0, allowed));
+  // Cut on a line boundary so we never split an HTML tag.
+  const lastBreak = cut.lastIndexOf("\n");
+  if (lastBreak > allowed / 2) cut = cut.slice(0, lastBreak);
+  return `${cut.trim()}\n\n${footer}`;
+}
+
+// Splits digest items into the changelog buckets the summary is built from.
+function classifyDigest(digest) {
+  const items = Array.isArray(digest.contest_digest) ? digest.contest_digest : [];
+  const changes = digest.changes || null;
+  const numbered = items.map((item, index) => ({ item, index: index + 1 }));
+  if (!changes) {
+    return { changes: null, numbered, fresh: numbered, updated: [], updatedByUrl: new Map() };
+  }
+
+  const updatedByUrl = new Map(
+    (changes.updated || []).map((entry) => [normalizeUrl(entry.issue_url), entry]),
+  );
+  const updated = numbered.filter(({ item }) => updatedByUrl.has(normalizeUrl(item.issue_url)));
+  const fresh = numbered.filter(({ item }) => !updatedByUrl.has(normalizeUrl(item.issue_url)));
+  return { changes, numbered, fresh, updated, updatedByUrl };
 }
 
 function buildDigestMessage(digest) {
-  const opportunities = Array.isArray(digest.contest_digest)
-    ? digest.contest_digest
-    : [];
-  const count = opportunities.length;
-  const shown = opportunities.slice(0, 8);
+  const { changes, numbered, fresh, updated, updatedByUrl } = classifyDigest(digest);
+  const indexLimit = envLimit("DIGEST_INDEX_LIMIT", 12);
+  const stillOpenLimit = envLimit("DIGEST_STILL_OPEN_LIMIT", 8);
+  const date = cleanText(digest.date) || new Date().toISOString().slice(0, 10);
+  const sections = [];
 
-  const items = shown.length
-    ? shown.map(formatOpportunity).join("\n\n")
-    : "No implementation opportunities were returned in this scan.";
+  const renderIndex = (entries) =>
+    entries.slice(0, indexLimit).map(({ item, index }) => indexLine(item, index)).join("\n");
+
+  if (!changes) {
+    sections.push(`<b>Top opportunities</b>\n${
+      numbered.length ? renderIndex(numbered) : "No implementation opportunities were returned in this scan."
+    }`);
+    if (numbered.length > indexLimit) {
+      sections.push(`Showing ${indexLimit} of ${numbered.length}. The rest are in the dashboard.`);
+    }
+  } else {
+    const closed = changes.closed || [];
+    const claimed = changes.claimed || [];
+    const stillOpen = changes.still_open || [];
+    sections.push(
+      `New ${fresh.length} · Updated ${updated.length} · Closed ${closed.length} · Claimed ${claimed.length} · Still open ${stillOpen.length}`,
+    );
+
+    if (fresh.length) {
+      sections.push(`<b>New today</b>\n${renderIndex(fresh)}`);
+    }
+    if (updated.length) {
+      const lines = updated.slice(0, indexLimit).map(({ item, index }) => {
+        const entry = updatedByUrl.get(normalizeUrl(item.issue_url)) || {};
+        const comment = commentLine(entry.latest_comment || item.latest_comment);
+        return `${indexLine(item, index)}${comment ? `\n    ${comment}` : ""}`;
+      });
+      sections.push(`<b>Updated since last digest</b>\n${lines.join("\n")}`);
+    }
+    if (!fresh.length && !updated.length) {
+      sections.push(
+        stillOpen.length
+          ? `No new or updated opportunities today. ${stillOpen.length} tracked issue${stillOpen.length === 1 ? " is" : "s are"} unchanged.`
+          : "No new opportunities today.",
+      );
+    }
+    if (closed.length || claimed.length) {
+      const lines = [
+        ...closed.map((entry) => trackedLine(entry)),
+        ...claimed.map((entry) => trackedLine(entry)),
+      ];
+      sections.push(`<b>Closed or claimed since last digest</b>\n${lines.join("\n")}`);
+    }
+    if (stillOpen.length) {
+      const lines = stillOpen.slice(0, stillOpenLimit).map((entry) => {
+        const meta = [entry.repo, entry.tracked_since ? `tracked since ${entry.tracked_since}` : ""]
+          .filter(Boolean)
+          .join(" · ");
+        return `• ${link(entry.title, entry.issue_url, 80)} · ${html(meta)}`;
+      });
+      const more = stillOpen.length > stillOpenLimit ? `\n…and ${stillOpen.length - stillOpenLimit} more` : "";
+      sections.push(`<b>Still open</b>\n${lines.join("\n")}${more}`);
+    }
+  }
+
+  if (digest.engineering && (digest.engineering.prs.length || digest.engineering.nudges.length)) {
+    sections.push(engineeringSection(digest.engineering));
+  }
+
+  if (digest.weekly_review) {
+    sections.push(weeklyReviewSection(digest.weekly_review));
+  }
+
+  if (numbered.length && digest.quick_plan) {
+    sections.push(`<b>Execution plan</b>\n${html(truncate(digest.quick_plan, 500))}`);
+  }
 
   const news = Array.isArray(digest.tech_news_summary)
-    ? digest.tech_news_summary
-        .slice(0, 4)
-        .map((n) => `- ${truncate(n, 180)}`)
-        .join("\n")
-    : truncate(digest.tech_news_summary || "", 500);
+    ? digest.tech_news_summary.slice(0, 4).map((n) => `- ${html(truncate(n, 180))}`).join("\n")
+    : html(truncate(digest.tech_news_summary || "", 500));
+  if (news) {
+    sections.push(`<b>Signal summary</b>\n${news}`);
+  }
 
-  const hiddenCount = count - shown.length;
-  const hiddenLine =
-    hiddenCount > 0
-      ? `\n\nShowing top ${shown.length}. ${hiddenCount} more are saved in the dashboard.`
-      : "";
+  sections.push("Open the dashboard for code skeletons, issue context, and team notes.");
 
-  const footer =
-    "Open the dashboard for full code skeletons, issue context, and team notes.";
-  const message = `Repository Intelligence Digest
-Date: ${cleanText(digest.date) || new Date().toISOString().slice(0, 10)}
-Opportunities found: ${count}
-
-Top opportunities
-${items}${hiddenLine}
-
-Execution plan
-${truncate(digest.quick_plan, 500)}
-
-Signal summary
-${news || "- No news summary returned."}
-
-${footer}`;
-
-  return fitMessage(
-    message,
-    "Message shortened. Open the dashboard for the full digest.",
-  );
+  const message = `<b>Repository Intelligence Digest</b> · ${html(date)}\n\n${sections.join("\n\n")}`;
+  return fitMessage(message, "Message shortened. Open the dashboard for the full digest.");
 }
 
-function buildOpportunityMessage(item, index, total) {
+function weeklyReviewSection(review) {
+  const line = entry => `• ${link(entry.title, entry.issue_url, 70)} · ${html([entry.repo, entry.owner ? `owner ${entry.owner}` : ""].filter(Boolean).join(" · "))}`;
+  const block = (title, entries, limit = 6) => (entries && entries.length
+    ? `${title} (${entries.length})\n${entries.slice(0, limit).map(line).join("\n")}${entries.length > limit ? `\n…and ${entries.length - limit} more` : ""}`
+    : "");
+  const parts = [
+    `<b>This week</b> · ${review.open_count} open in the queue`,
+    block("Added", review.added),
+    block("Finished", review.done),
+    block("In progress", review.in_progress),
+    block("Gone quiet", review.stale),
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+const PR_STATE_LABELS = {
+  changes_requested: "Changes requested",
+  ci_failing: "CI failing",
+  needs_rebase: "Needs rebase",
+  approved: "Approved",
+  in_review: "In review",
+  ci_pending: "CI running",
+  awaiting_review: "Awaiting review",
+  draft: "Draft",
+  merged: "Merged",
+  closed: "Closed",
+  unknown: "Unknown",
+};
+
+function engineeringSection(report) {
+  const lines = [`<b>Your work</b> · ${report.counts.active} in progress · ${report.counts.yourMove} need you`];
+  for (const pr of report.prs.slice(0, 8)) {
+    const flag = pr.yourMove ? "→ " : pr.state === "merged" ? "✔ " : "· ";
+    lines.push(`${flag}${link(pr.title, pr.prUrl, 70)} · ${html(PR_STATE_LABELS[pr.state] || pr.state)}${pr.detail ? `: ${html(pr.detail)}` : ""}`);
+  }
+  for (const nudge of report.nudges.slice(0, 5)) {
+    lines.push(`⏳ ${link(nudge.title, nudge.prUrl || nudge.issueUrl, 70)} · ${html(nudge.detail)}`);
+  }
+  if (report.nudges.some((n) => !n.prUrl)) {
+    lines.push(`Link a PR with <code>/pr &lt;issue url&gt; &lt;pr url&gt;</code>`);
+  }
+  return lines.join("\n");
+}
+
+// Inline buttons that write back to the record: claim it, or drop it.
+function opportunityKeyboard(item) {
+  if (!item.record_id) return null;
+  const id = String(item.record_id).slice(0, 50);
+  return {
+    inline_keyboard: [[
+      { text: "I'll take it", callback_data: `claim:${id}` },
+      { text: "Not for me", callback_data: `dismiss:${id}` },
+    ]],
+  };
+}
+
+function buildOpportunityMessage(item, index, total, options = {}) {
   const footer = "Open the dashboard for the code skeleton and work log.";
-  const message = `Opportunity ${index + 1} of ${total}
-[${effortLabel(item.effort)}] ${truncate(item.opportunity, 120)}
+  const tag = options.tag ? ` · ${html(options.tag)}` : "";
+  const head = [
+    `<b>Opportunity ${index} of ${total}</b>${tag}`,
+    `[${effortLabel(item.effort)}] ${link(item.opportunity, item.issue_url, 120)}`,
+    "",
+    `Repo: ${html(item.repo || "Unknown repo")}`,
+    `Issue: ${html(item.issue_url || "No issue URL")}`,
+    `Source: ${html(item.source || "scan")} · Score: ${Number(item.score || 0) || "n/a"}`,
+  ];
+  const activity = activityLine(item);
+  if (activity) head.push(activity);
+  const linkedPRs = (item.linked_prs || []).slice(0, 3);
+  if (linkedPRs.length) {
+    head.push(`Linked PRs: ${linkedPRs.map((pr) => {
+      const label = pr.sameRepo === false && pr.repo ? `${pr.repo}#${pr.number}` : `#${pr.number}`;
+      return `${link(label, pr.url, 60)} (${html(pr.state)})`;
+    }).join(", ")}`);
+  }
+  const comment = options.comment || (options.tag === "UPDATED" ? commentLine(item.latest_comment) : "");
+  if (comment) head.push(`New comment: ${comment}`);
 
-Repo: ${cleanText(item.repo) || "Unknown repo"}
-Issue: ${cleanText(item.issue_url) || "No issue URL"}
-Source: ${cleanText(item.source) || "scan"}
-Score: ${Number(item.score || 0) || "n/a"}
+  const body = [];
+  if (item.maintainer_wants) {
+    body.push(`<b>Maintainer wants</b>\n${html(truncate(item.maintainer_wants, 450))}`);
+  }
+  if (item.current_state && item.current_state !== "available" && item.state_reason) {
+    body.push(`<b>State</b>\n${html(item.current_state.replace(/_/g, " "))}: ${html(truncate(item.state_reason, 200))}`);
+  }
+  body.push(`<b>Why</b>\n${html(truncate(item.why_it_qualifies, 450))}`);
+  const planSteps = Array.isArray(item.analysis?.analysis?.plan) ? item.analysis.analysis.plan : [];
+  if (planSteps.length) {
+    body.push(`<b>Plan</b>\n${planSteps.slice(0, 5).map((step, i) => `${i + 1}. ${html(truncate(step, 160))}`).join("\n")}`);
+  } else {
+    body.push(`<b>Next</b>\n${html(truncate(item.suggested_action, 550))}`);
+  }
+  const files = (item.files_to_change || []).slice(0, 4);
+  if (files.length) {
+    body.push(`<b>Files</b>\n${files.map((file) => `• <code>${escapeHtml(file.path)}</code>${file.why ? ` — ${html(truncate(file.why, 90))}` : ""}`).join("\n")}`);
+  }
+  const questions = (item.open_questions || []).slice(0, 2);
+  if (questions.length) {
+    body.push(`<b>Ask first</b>\n${questions.map((q) => `• ${html(truncate(q, 160))}`).join("\n")}`);
+  }
+  if (!isEmptyTip(item.clarity_tip)) {
+    const tip = truncate(item.clarity_tip, 300);
+    // Short tips are usually a bare command: render them as code.
+    const looksLikeCommand = tip.length <= 80 && !/[.!?]\s|\s(and|then|or)\s/i.test(tip) && !tip.includes("`");
+    body.push(`<b>Check</b>\n${looksLikeCommand ? `<code>${escapeHtml(tip)}</code>` : html(tip)}`);
+  }
 
-Why
-${truncate(item.why_it_qualifies, 450)}
-
-Next
-${truncate(item.suggested_action, 550)}
-
-Check
-${truncate(item.clarity_tip, 180) || "Run the relevant repository checks before opening a PR."}
-
-${footer}`;
-
-  return fitMessage(
-    message,
-    "Opportunity shortened. Open the dashboard for the full detail.",
-  );
+  const message = `${head.join("\n")}\n\n${body.join("\n\n")}\n\n${footer}`;
+  const text = fitMessage(message, "Opportunity shortened. Open the dashboard for the full detail.");
+  const replyMarkup = opportunityKeyboard(item);
+  return replyMarkup ? { text, replyMarkup } : text;
 }
 
 function buildDigestMessages(digest) {
-  const detailLimit = Number(process.env.DIGEST_DETAIL_LIMIT || 8);
-  const opportunities = Array.isArray(digest.contest_digest)
-    ? digest.contest_digest.slice(
-        0,
-        Number.isFinite(detailLimit) && detailLimit > 0 ? detailLimit : 8,
-      )
-    : [];
+  const detailLimit = envLimit("DIGEST_DETAIL_LIMIT", 8);
+  const { changes, fresh, updated, updatedByUrl } = classifyDigest(digest);
+  // Only new and updated items get a detail message; unchanged ones are
+  // already in the reader's history.
+  const detailed = [...fresh, ...updated]
+    .sort((a, b) => a.index - b.index)
+    .slice(0, detailLimit);
+
   return [
     buildDigestMessage(digest),
-    ...opportunities.map((item, index) =>
-      buildOpportunityMessage(item, index, opportunities.length),
-    ),
+    ...detailed.map(({ item }, position) => {
+      const key = normalizeUrl(item.issue_url);
+      const isUpdated = Boolean(changes) && updatedByUrl.has(key);
+      const entry = isUpdated ? updatedByUrl.get(key) : null;
+      return buildOpportunityMessage(item, position + 1, detailed.length, {
+        tag: changes ? (isUpdated ? "UPDATED" : "NEW") : "",
+        comment: entry ? commentLine(entry.latest_comment || item.latest_comment) : "",
+      });
+    }),
   ];
 }
-// ─── Telegram command listener (long-polling) ────────────────────────────────
-// Calls getUpdates in a loop. When it sees /scan from the authorized chatId,
-// calls onScan(). Safe to run alongside the cron scheduler.
 
-// Processes a single Telegram update (one message). Shared by the long-polling
-// listener (listenForCommands) and the serverless webhook (api/telegram.js) so
-// both modes behave identically. onScan is invoked for /scan commands.
-// `bot` identifies which bot received the message ({ botId, token }), so replies
-// go back out through that same bot and its subscribers stay separate. Defaults
-// to the primary bot for single-bot setups.
+function analysisReply(result) {
+  const a = result.analysis || {};
+  const ctx = result.context || {};
+  const issue = ctx.issue || {};
+  const lines = [
+    `<b>${html(issue.title || result.issueUrl)}</b>`,
+    html(result.issueUrl),
+    `State: ${html(String(a.currentState || "").replace(/_/g, " "))}${a.stateReason ? ` — ${html(truncate(a.stateReason, 160))}` : ""}`,
+    `Effort ${html(a.effort)} · Impact ${html(a.impact)} · Confidence ${a.confidence || 0}%${result.model === "heuristic" ? " · heuristic" : ""}`,
+  ];
+  if (a.maintainerWants) lines.push("", `<b>Maintainer wants</b>\n${html(truncate(a.maintainerWants, 500))}`);
+  if ((a.plan || []).length) lines.push("", `<b>Plan</b>\n${a.plan.slice(0, 6).map((step, i) => `${i + 1}. ${html(truncate(step, 160))}`).join("\n")}`);
+  if ((a.filesToChange || []).length) lines.push("", `<b>Files</b>\n${a.filesToChange.slice(0, 5).map((f) => `• <code>${escapeHtml(f.path)}</code>`).join("\n")}`);
+  if ((a.openQuestions || []).length) lines.push("", `<b>Ask first</b>\n${a.openQuestions.slice(0, 3).map((q) => `• ${html(truncate(q, 160))}`).join("\n")}`);
+  if (a.validation) lines.push("", `<b>Check</b>\n<code>${escapeHtml(truncate(a.validation, 120))}</code>`);
+  return fitMessage(lines.join("\n"), "Shortened. Open the dashboard for the full analysis.");
+}
+
+async function handleCallbackQuery(query, bot) {
+  const active = bot || primaryBot() || {};
+  const token = active.token || config.telegram.botToken;
+  const botId = active.botId || "";
+  const chatId = normalizeChatId(query.message && query.message.chat && query.message.chat.id);
+  const answer = (text) => telegramCall(token, "answerCallbackQuery", { callback_query_id: query.id, text }).catch(() => null);
+
+  const match = String(query.data || "").match(/^(claim|dismiss|why):([^:]+)(?::(\w+))?$/);
+  if (!match) return answer("Unknown action");
+  if (!(await isSubscriber(chatId, botId))) return answer("Subscribe with /start first");
+
+  const [, action, recordId, reasonKey] = match;
+  const who = (query.from && (query.from.username || query.from.first_name)) || "telegram";
+  const stamp = new Date().toISOString().slice(0, 10);
+  const editButtons = (rows) => (query.message
+    ? telegramCall(token, "editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      reply_markup: { inline_keyboard: rows },
+    }).catch(() => null)
+    : null);
+
+  try {
+    const existing = await findActivityLog(recordId);
+    const appendLog = (line) => (existing ? `${existing}\n${line}` : line);
+    if (action === "claim") {
+      await updateOpportunity(recordId, {
+        status: "In Progress",
+        owner: who,
+        activityLog: appendLog(`[telegram ${stamp}] claimed by ${who}`),
+      });
+      await answer(`Assigned to ${who}`);
+      await editButtons([[{ text: `✔ Taken by ${who}`, callback_data: "noop" }]]);
+    } else if (action === "dismiss") {
+      await updateOpportunity(recordId, {
+        status: "Done",
+        activityLog: appendLog(`[telegram ${stamp}] dismissed by ${who}`),
+      });
+      await answer("Dismissed. Why? (helps future picks)");
+      await editButtons([
+        Object.entries(DISMISS_REASONS).map(([key, label]) => ({ text: label, callback_data: `why:${recordId}:${key}` })),
+      ]);
+    } else {
+      const reason = DISMISS_REASONS[reasonKey] || "other";
+      await updateOpportunity(recordId, {
+        activityLog: appendLog(`[telegram ${stamp}] [dismiss reason: ${reason}]`),
+      });
+      await answer(`Noted: ${reason}`);
+      await editButtons([[{ text: `✖ Dismissed · ${reason}`, callback_data: "noop" }]]);
+    }
+  } catch (e) {
+    return answer(`Could not update: ${e.message}`);
+  }
+  return true;
+}
+
+async function findActivityLog(recordId) {
+  try {
+    const { listOpportunities } = require("./airtable");
+    const { opportunities } = await listOpportunities();
+    const record = opportunities.find((item) => item.id === recordId);
+    return record ? record.activityLog || "" : "";
+  } catch {
+    return "";
+  }
+}
+
 async function handleTelegramUpdate(update, onScan, bot) {
+  if (update && update.callback_query) {
+    return handleCallbackQuery(update.callback_query, bot);
+  }
   const msg = update && update.message;
   if (!msg || !msg.chat) return;
 
@@ -420,6 +745,56 @@ async function handleTelegramUpdate(update, onScan, bot) {
     } catch (e) {
       await reply(`Scan failed: ${e.message}`);
     }
+  } else if (command === "pr") {
+    if (!(await isSubscriber(chatId, botId))) {
+      await reply("Subscribe with /start first.");
+      return;
+    }
+    const urls = String(msg.text || "").match(/https?:\/\/github\.com\/\S+/gi) || [];
+    const issueRef = urls.map((u) => ({ u, ref: parseIssueUrl(u) })).find((x) => x.ref && /\/issues\//i.test(x.u));
+    const prRef = urls.map((u) => ({ u, ref: parseIssueUrl(u) })).find((x) => x.ref && /\/pull\//i.test(x.u));
+    if (!issueRef || !prRef) {
+      await reply("Usage: /pr <issue url> <pr url>");
+      return;
+    }
+    try {
+      const { listOpportunities } = require("./airtable");
+      const { opportunities } = await listOpportunities();
+      const record = opportunities.find((item) => normalizeUrl(item.issueUrl) === normalizeUrl(issueRef.u));
+      if (!record) {
+        await reply("That issue is not in the queue yet. Run /scan or add it from the dashboard first.");
+        return;
+      }
+      const who = (msg.from && (msg.from.username || msg.from.first_name)) || record.owner || "telegram";
+      const stamp = new Date().toISOString().slice(0, 10);
+      await updateOpportunity(record.id, {
+        prUrl: prRef.u,
+        status: "In Progress",
+        owner: record.owner || who,
+        activityLog: `${record.activityLog ? `${record.activityLog}\n` : ""}[telegram ${stamp}] linked PR ${prRef.u}`,
+      });
+      await reply(`Linked. I will track ${prRef.u} for reviews, CI, and merge.`);
+    } catch (e) {
+      await reply(`Could not link: ${e.message}`);
+    }
+  } else if (command === "analyze" || command === "analyse") {
+    if (!(await isSubscriber(chatId, botId))) {
+      await reply("You need to be subscribed to analyze issues. Send /start first.");
+      return;
+    }
+    const urlMatch = String(msg.text || "").match(/https?:\/\/github\.com\/\S+/i);
+    const ref = urlMatch ? parseIssueUrl(urlMatch[0]) : null;
+    if (!ref) {
+      await reply("Send the issue link, e.g. /analyze https://github.com/owner/repo/issues/123");
+      return;
+    }
+    await reply("Reading the issue, thread, linked PRs, and source…");
+    try {
+      const result = await analyzeIssue({ url: urlMatch[0] });
+      await sendTelegramToChat(chatId, analysisReply(result), token, { parseMode: DIGEST_PARSE_MODE });
+    } catch (e) {
+      await reply(`Analysis failed: ${e.message}`);
+    }
   } else if (command === "status") {
     await reply(
       (await isSubscriber(chatId, botId))
@@ -429,7 +804,7 @@ async function handleTelegramUpdate(update, onScan, bot) {
   } else if (command === "help") {
     await reply(
       (await isSubscriber(chatId, botId))
-        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
+        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
         : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot",
     );
   }
@@ -468,7 +843,7 @@ async function pollBot(bot, onScan, admin) {
 
   while (true) {
     try {
-      const url = `https://api.telegram.org/bot${bot.token}/getUpdates?offset=${offset}&timeout=30&allowed_updates=["message"]`;
+      const url = `https://api.telegram.org/bot${bot.token}/getUpdates?offset=${offset}&timeout=30&allowed_updates=["message","callback_query"]`;
       const res = await fetch(url, { signal: AbortSignal.timeout(40_000) });
       if (!res.ok) {
         // 409 means a webhook is registered for this bot; polling can't also run.
@@ -505,6 +880,10 @@ function sleep(ms) {
 
 module.exports = {
   sendNotification,
+  DIGEST_PARSE_MODE,
+  stripHtml,
+  messageText,
+  handleCallbackQuery,
   buildDigestMessage,
   buildDigestMessages,
   listenForCommands,

@@ -52,6 +52,8 @@ function buildUserMessage(repoData, news, options = {}) {
     opportunityLimit = null,
     codeSkeletonLimit = null,
     scanFocus = '',
+    maxPerRepo = 0,
+    contributorProfile = '',
   } = options;
 
   const limitInstruction = opportunityLimit
@@ -61,6 +63,10 @@ function buildUserMessage(repoData, news, options = {}) {
     ? `Keep each code_skeleton under ${codeSkeletonLimit} characters.`
     : 'For each opportunity include a real code_skeleton the developer can immediately use.';
 
+  const spreadInstruction = maxPerRepo
+    ? `Spread the picks across repositories: at most ${maxPerRepo} opportunities from any single repo.`
+    : '';
+
   return `Today is ${new Date().toISOString().slice(0, 10)}.
 
 === GITHUB SCAN (${scanLabel}) ===
@@ -69,30 +75,45 @@ ${JSON.stringify(repoData, null, 2)}
 === LATEST TECH NEWS (titles only) ===
 ${summarizeNews(news, newsLimit)}
 
-Analyze the above data. ${limitInstruction}
+${contributorProfile ? `=== CONTRIBUTOR PROFILE (learned from past outcomes) ===\n${contributorProfile}\nPrefer work that matches this profile; avoid repeating what they dismiss.\n\n` : ''}Analyze the above data. ${limitInstruction}
 ${codeInstruction}
-${scanFocus ? `${scanFocus}\n` : ''}
+${spreadInstruction ? `${spreadInstruction}\n` : ''}${scanFocus ? `${scanFocus}\n` : ''}
 Focus on good-first-issue, bug, help-wanted, and high-signal issues first.`;
 }
 
 // Trim repo data before sending to cloud APIs — keeps top 6 issues per repo
 // (already sorted: good-first + bugs first), truncates bodies, drops recentPRs.
 function trimForCloud(repoData, options = {}) {
+  const envBodyChars = Number(process.env.DIGEST_BODY_CHARS);
   const {
     issuesPerRepo = 6,
-    bodyChars = 200,
+    bodyChars = Number.isFinite(envBodyChars) && envBodyChars > 0 ? envBodyChars : 1500,
     includeRepoUrl = true,
+    commentChars = 300,
   } = options;
 
   return repoData.map(r => ({
     repo: r.repo,
     ...(includeRepoUrl ? { repoUrl: r.repoUrl } : {}),
+    ...(r.overview && r.overview.language ? { language: r.overview.language } : {}),
     issues: r.issues.slice(0, issuesPerRepo).map(i => ({
       number: i.number,
       title: i.title,
       body: (i.body || '').slice(0, bodyChars),
       labels: i.labels,
       url: i.url,
+      ...(i.createdAt ? { created_at: String(i.createdAt).slice(0, 10) } : {}),
+      ...(i.comments ? { comments_count: i.comments } : {}),
+      ...(i.assignees && i.assignees.length ? { assignees: i.assignees } : {}),
+      ...(i.issueFitScore ? { fit_score: i.issueFitScore, fit_reason: i.issueFitReason } : {}),
+      ...(i.triageScore ? { triage_score: i.triageScore, triage_reason: i.triageReason } : {}),
+      ...(Array.isArray(i.recentConversation) && i.recentConversation.length ? {
+        recent_comments: i.recentConversation.map(c => `${c.author || 'someone'} (${String(c.createdAt || '').slice(0, 10)}): ${String(c.body || '').slice(0, commentChars)}`),
+      } : {}),
+      ...(Array.isArray(i.linkedPRs) && i.linkedPRs.length ? {
+        linked_prs: i.linkedPRs.slice(0, 4).map(pr => `#${pr.number} ${pr.state}${pr.author ? ` by ${pr.author}` : ''}: ${pr.title}`),
+      } : {}),
+      ...(i.hasNewActivity ? { note: 'recommended before; has new activity since' } : {}),
     })),
   }));
 }
@@ -110,7 +131,6 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
   };
   const trimmedRepoData = trimForCloud(repoData, {
     issuesPerRepo: options.issuesPerRepo || (digestMode === 'weekly' ? 6 : 4),
-    bodyChars: 120,
   });
   const userMessage = buildUserMessage(trimmedRepoData, news, {
     newsLimit: digestMode === 'weekly' ? 20 : 12,
@@ -118,17 +138,19 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
     opportunityLimit: options.opportunityLimit || (digestMode === 'weekly' ? 12 : 8),
     codeSkeletonLimit: 700,
     scanFocus: focusByMode[scanMode] || '',
+    maxPerRepo: options.maxPerRepo || 0,
+    contributorProfile: options.contributorProfile || '',
   });
 
   try {
     if (process.env.GEMINI_API_KEY) {
-      return analyzeWithGemini(userMessage);
+      return await analyzeWithGemini(userMessage);
     }
     if (process.env.GROQ_API_KEY) {
-      return analyzeWithGroq(userMessage);
+      return await analyzeWithGroq(userMessage);
     }
   } catch (error) {
-    console.warn(`  Model analysis failed, using deterministic fallback: ${error.message}`);
+    console.warn(`  Model analysis failed, using deterministic fallback: ${error.message.split('\n')[0]}`);
   }
 
   if (!process.env.GEMINI_API_KEY && !process.env.GROQ_API_KEY) {
@@ -137,6 +159,8 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
         scanLabel: options.scanLabel,
         opportunityLimit: options.opportunityLimit,
         scanFocus: focusByMode[scanMode] || '',
+        maxPerRepo: options.maxPerRepo || 0,
+        contributorProfile: options.contributorProfile || '',
       }));
     } catch (error) {
       console.warn(`  Ollama analysis failed, using deterministic fallback: ${error.message}`);
@@ -152,7 +176,10 @@ async function analyzeDigestWithModel(repoData, news, options = {}) {
 // If all are unavailable, fall back to Groq (if key is set).
 const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
-async function analyzeWithGemini(userMessage) {
+async function analyzeWithGemini(userMessage, options = {}) {
+  const system = options.system || SYSTEM_PROMPT;
+  const parse = options.parse || parseJSON;
+  let lastGeminiError = '';
   for (const model of GEMINI_MODELS) {
     console.log(`  Sending to Gemini (${model})...`);
 
@@ -167,14 +194,14 @@ async function analyzeWithGemini(userMessage) {
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'system', content: system },
             { role: 'user', content: userMessage },
           ],
-          temperature: 0.3,
-          max_tokens: 12000,
+          temperature: options.temperature ?? 0.3,
+          max_tokens: options.maxTokens || 12000,
           response_format: { type: 'json_object' },
         }),
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(options.timeoutMs || 120_000),
       }
     );
 
@@ -182,7 +209,7 @@ async function analyzeWithGemini(userMessage) {
       const data = await res.json();
       const raw = data.choices?.[0]?.message?.content || '';
       try {
-        return parseJSON(raw);
+        return parse(raw);
       } catch (error) {
         console.warn(`  Gemini ${model} returned invalid JSON — trying fallback model/provider...`);
         continue;
@@ -191,24 +218,29 @@ async function analyzeWithGemini(userMessage) {
 
     const errText = await res.text();
 
-    if (res.status === 503) {
-      console.warn(`  Gemini ${model} unavailable (503) — trying next...`);
+    if (res.status === 503 || res.status === 429) {
+      console.warn(`  Gemini ${model} unavailable (${res.status}) — trying next...`);
       continue;
     }
 
-    throw new Error(`Gemini error: ${res.status} ${errText}`);
+    // Key/project problems (400/401/403/404) affect every Gemini model alike:
+    // stop trying Gemini and let Groq take over instead of failing the scan.
+    lastGeminiError = `Gemini error: ${res.status} ${errText.slice(0, 300)}`;
+    console.warn(`  ${lastGeminiError.split('\n')[0]} — skipping remaining Gemini models`);
+    break;
   }
 
-  // All Gemini models returned 503 — try Groq
   if (process.env.GROQ_API_KEY) {
     console.warn('  Gemini did not produce a usable digest — falling back to Groq...');
-    return analyzeWithGroq(userMessage);
+    return analyzeWithGroq(userMessage, options);
   }
 
-  throw new Error('Gemini did not produce a usable digest and GROQ_API_KEY is not set');
+  throw new Error(lastGeminiError || 'Gemini did not produce a usable digest and GROQ_API_KEY is not set');
 }
 
-async function analyzeWithGroq(userMessage) {
+async function analyzeWithGroq(userMessage, options = {}) {
+  const system = options.system || SYSTEM_PROMPT;
+  const parse = options.parse || parseJSON;
   const model = 'llama-3.3-70b-versatile';
   const attempts = [
     { label: 'full', message: userMessage },
@@ -232,19 +264,19 @@ async function analyzeWithGroq(userMessage) {
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: system },
           { role: 'user', content: attempt.message },
         ],
-        temperature: 0.3,
-        max_tokens: 4096,
+        temperature: options.temperature ?? 0.3,
+        max_tokens: Math.min(options.maxTokens || 4096, 8192),
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(options.timeoutMs || 120_000),
     });
 
     if (res.ok) {
       const data = await res.json();
       const raw = data.choices?.[0]?.message?.content || '';
-      return parseJSON(raw);
+      return parse(raw);
     }
 
     const err = await res.text();
@@ -257,17 +289,19 @@ async function analyzeWithGroq(userMessage) {
   }
 }
 
-async function analyzeWithOllama(userMessage) {
+async function analyzeWithOllama(userMessage, options = {}) {
+  const system = options.system || SYSTEM_PROMPT;
+  const parse = options.parse || parseJSON;
   const body = {
     model: config.ollama.model,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: system },
       { role: 'user', content: userMessage },
     ],
     stream: false,
     options: {
-      temperature: 0.3,
-      num_predict: 8192,
+      temperature: options.temperature ?? 0.3,
+      num_predict: options.maxTokens || 8192,
     },
   };
 
@@ -285,7 +319,35 @@ async function analyzeWithOllama(userMessage) {
 
   const data = await res.json();
   const raw = data.message?.content || '';
-  return parseJSON(raw);
+  return parse(raw);
+}
+
+function hasCloudProvider() {
+  return Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY);
+}
+
+// Extract and parse a JSON object from raw model output without digest validation.
+function parseLooseJson(raw) {
+  const stripped = String(raw || '').replace(/```(?:json)?/gi, '').trim();
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    const start = stripped.indexOf('{');
+    const end = stripped.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      return JSON.parse(stripped.slice(start, end + 1));
+    }
+    throw new Error('Model returned non-JSON output');
+  }
+}
+
+// Generic structured call used by per-issue analysis. Same provider chain as
+// the digest: Gemini → Groq → Ollama. Throws when no provider is usable.
+async function requestJson({ system, user, maxTokens = 6000, timeoutMs = 120_000, temperature = 0.2 }) {
+  const options = { system, maxTokens, timeoutMs, temperature, parse: parseLooseJson };
+  if (process.env.GEMINI_API_KEY) return analyzeWithGemini(user, options);
+  if (process.env.GROQ_API_KEY) return analyzeWithGroq(user, options);
+  return analyzeWithOllama(user, options);
 }
 
 function parseJSON(raw) {
@@ -469,7 +531,59 @@ function buildDeterministicDigest(repoData, news, options = {}) {
   };
 }
 
+const TRIAGE_PROMPT = `You rank GitHub issues for an external contributor looking for their next pull request.
+For each candidate, judge how good a first contribution it is: clear ask, maintainer interest, narrow scope, not already taken, still relevant.
+Return ONLY JSON: { "ranked": [ { "url": "...", "score": 0-100, "reason": "short reason" } ] }. Include every candidate exactly once.`;
+
+// Cheap model ranking over all candidates so the digest is not limited to the
+// label-driven fit score. Returns a Map url → { score, reason }.
+async function triageIssues(repoData, options = {}) {
+  const { request = requestJson, maxCandidates = 60 } = options;
+  const candidates = [];
+  for (const repo of repoData) {
+    for (const issue of repo.issues || []) {
+      if (!issue.url || candidates.length >= maxCandidates) continue;
+      candidates.push({
+        url: issue.url,
+        repo: repo.repo,
+        title: issue.title,
+        labels: issue.labels || [],
+        opened: String(issue.createdAt || '').slice(0, 10),
+        updated: String(issue.updatedAt || '').slice(0, 10),
+        comments: issue.comments || 0,
+        body: String(issue.body || '').slice(0, 250),
+        latest_comment: issue.latestComment && issue.latestComment.body
+          ? `${issue.latestComment.author}: ${String(issue.latestComment.body).slice(0, 160)}`
+          : '',
+        fit_score: issue.issueFitScore || 0,
+      });
+    }
+  }
+  if (candidates.length < 2) return new Map();
+
+  const raw = await request({
+    system: TRIAGE_PROMPT,
+    user: `Candidates:\n${JSON.stringify(candidates, null, 1)}`,
+    maxTokens: 4000,
+    temperature: 0.1,
+  });
+  const ranked = Array.isArray(raw && raw.ranked) ? raw.ranked : [];
+  const result = new Map();
+  for (const entry of ranked) {
+    const url = String(entry && entry.url || '').trim().toLowerCase();
+    const score = Number(entry && entry.score);
+    if (!url || !Number.isFinite(score)) continue;
+    result.set(url, { score: Math.max(0, Math.min(100, score)), reason: String(entry.reason || '').slice(0, 200) });
+  }
+  return result;
+}
+
 module.exports = {
+  requestJson,
+  triageIssues,
+  hasCloudProvider,
+  parseLooseJson,
+  trimForCloud,
   analyzeWithGemma: analyzeDigestWithModel,
   analyzeDigestWithModel,
   buildDeterministicDigest,

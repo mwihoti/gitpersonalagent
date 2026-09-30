@@ -1,7 +1,7 @@
 {
   "name": "danagent",
   "version": "1.0.0",
-  "description": "Stacks Dev Assistant - Code, Commit, Earn contest helper powered by Gemma",
+  "description": "Repository Intelligence Dashboard - scans GitHub repos for contribution opportunities and sends a daily Telegram digest",
   "main": "agent.js",
   "scripts": {
     "scan": "node agent.js --scan",
@@ -9,13 +9,16 @@
     "setup": "node scripts/setup-airtable.js",
     "bot": "node agent.js --bot",
     "set-webhook": "node scripts/set-webhook.js",
+    "dedupe-airtable": "node scripts/dedupe-airtable.js",
     "dev": "node dev-server.js",
     "test": "node --test --test-concurrency=1"
   },
   "keywords": [
-    "stacks",
-    "clarity",
-    "gemma",
+    "github",
+    "open-source",
+    "telegram",
+    "airtable",
+    "gemini",
     "ollama"
   ],
   "author": "",

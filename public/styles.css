@@ -826,3 +826,101 @@ pre {
     width: 100%;
   }
 }
+
+/* Deep issue analysis */
+.analysis-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.analysis-card h4 {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+}
+
+.analysis-card p,
+.analysis-card li {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.analysis-card ol,
+.analysis-card ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+}
+
+.analysis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.analysis-quote {
+  border-left: 3px solid rgba(255, 255, 255, 0.2);
+  padding: 6px 12px;
+  margin: 0;
+  font-size: 0.88rem;
+  opacity: 0.9;
+}
+
+.analysis-quote cite {
+  display: block;
+  font-style: normal;
+  font-size: 0.78rem;
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
+.analysis-card code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.84rem;
+}
+
+.analysis-card pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  max-height: 360px;
+}
+
+.state-available { color: #7ee787; }
+.state-taken { color: #ffa657; }
+.state-unclear { color: #d2a8ff; }
+
+/* Live issue state in the workbench */
+.live-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.85rem;
+}
+
+.live-strip .live-comment {
+  flex-basis: 100%;
+  opacity: 0.85;
+}
+
+.tag.tag-stale { border-color: #ffa657; color: #ffa657; }
+.tag.tag-changed { border-color: #d2a8ff; color: #d2a8ff; }
+.tag.tag-closed { border-color: #ff7b72; color: #ff7b72; }
+.tag.tag-open { border-color: #7ee787; color: #7ee787; }

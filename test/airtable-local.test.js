@@ -127,3 +127,53 @@ test('saveDigest deduplicates recurring issue entries into one queue item', asyn
   const result = await airtable.listOpportunities();
   assert.equal(result.opportunities.length, 1);
 });
+
+test('saveDigest returns record ids and recordIssueEvents appends to the activity log', async t => {
+  const airtable = await loadAirtableModule(t);
+
+  const created = await airtable.saveDigest({
+    date: '2026-09-05',
+    quick_plan: 'plan',
+    contest_digest: [{
+      opportunity: 'Tracked',
+      repo: 'owner/repo',
+      why_it_qualifies: 'q',
+      suggested_action: 'a',
+      clarity_tip: '',
+      issue_url: 'https://github.com/owner/repo/issues/5',
+      code_skeleton: '',
+      why_it_matters: 'm',
+      effort: 'low',
+    }],
+  });
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0].issueUrl, 'https://github.com/owner/repo/issues/5');
+  assert.match(created[0].id, /^local-/);
+
+  const applied = await airtable.recordIssueEvents([
+    { recordId: created[0].id, activityLog: '', line: '[bot 2026-09-05] new activity', issueUpdatedAt: '2026-09-05T00:00:00Z' },
+    { recordId: created[0].id, activityLog: '[bot 2026-09-05] new activity', line: '[bot 2026-09-06] closed upstream', status: 'Done' },
+    { recordId: 'missing', line: 'x' },
+    { recordId: created[0].id },
+  ]);
+  assert.equal(applied, 2);
+
+  const { opportunities } = await airtable.listOpportunities();
+  assert.equal(opportunities[0].status, 'Done');
+  assert.equal(opportunities[0].issueUpdatedAt, '2026-09-05T00:00:00Z');
+  assert.equal(opportunities[0].activityLog, '[bot 2026-09-05] new activity\n[bot 2026-09-06] closed upstream');
+
+  const removed = await airtable.deleteOpportunities([created[0].id]);
+  assert.equal(removed, 1);
+  assert.equal((await airtable.listOpportunities()).opportunities.length, 0);
+});
+
+test('derivePriority blends impact with effort', async t => {
+  const airtable = await loadAirtableModule(t);
+  assert.equal(airtable.derivePriority({ effort: 'low' }), 'High');
+  assert.equal(airtable.derivePriority({ effort: 'high' }), 'Low');
+  assert.equal(airtable.derivePriority({ effort: 'low', impact: 'low' }), 'Medium');
+  assert.equal(airtable.derivePriority({ effort: 'medium', impact: 'high' }), 'High');
+  assert.equal(airtable.derivePriority({ effort: 'high', impact: 'low' }), 'Low');
+});

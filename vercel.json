@@ -4,7 +4,16 @@
       "maxDuration": 60
     },
     "api/telegram.js": {
+      "maxDuration": 60
+    },
+    "api/issue-status.js": {
       "maxDuration": 30
+    },
+    "api/issue-analysis.js": {
+      "maxDuration": 60
+    },
+    "api/repo-issues.js": {
+      "maxDuration": 60
     }
   },
   "crons": [

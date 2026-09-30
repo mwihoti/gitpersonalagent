@@ -177,6 +177,45 @@ function scoreFromRange(value, ranges) {
   return ranges[ranges.length - 1].score;
 }
 
+const CLAIM_PATTERN = /\b(i(?:'|’)?ll (?:take(?!\s+a\s+(?:quick\s+|closer\s+|second\s+)?(?:look|peek|glance))|pick|work|do|handle|open|start|give)|i(?:'|’)?d like to (?:take|pick|work|try|handle)|i (?:can|could|would like to|want to|plan to) (?:take|pick|work|try|handle|do)|(?:i am|i(?:'|’)?m) (?:working|going to work|on it)|working on (?:this|it|a fix|a pr|a patch)|pick(?:ing)? this up|take this (?:one|issue|on)|(?:please )?assign (?:this |it )?(?:to )?me|opened? (?:a )?(?:pr|pull request)|(?:have|got) (?:a|an) (?:open )?(?:branch|pr|patch|draft)|(?:branch|pr|patch) (?:should|will|would) (?:close|fix|resolve) this|should close this issue)\b|https?:\/\/github\.com\/[^\s)]+\/(?:tree|pull)\//i;
+
+function isBotLogin(login) {
+  return /\[bot\]$|-bot$|^dependabot|^renovate/i.test(String(login || ''));
+}
+
+// Detects whether somebody already owns this issue: an assignee, an open
+// linked PR, or a comment that reads like "I'll take this".
+function detectClaim(issue, comments = [], linkedPRs = []) {
+  const assignees = (issue.assignees || [])
+    .map(user => (typeof user === 'string' ? user : user?.login))
+    .filter(Boolean);
+  if (assignees.length) {
+    return { claimed: true, reason: `assigned to ${assignees.join(', ')}`, by: assignees[0], prUrl: '' };
+  }
+
+  const openPR = linkedPRs.find(pr => pr.state === 'open' && pr.sameRepo !== false);
+  if (openPR) {
+    return {
+      claimed: true,
+      reason: `open PR #${openPR.number}${openPR.author ? ` by ${openPR.author}` : ''}`,
+      by: openPR.author || '',
+      prUrl: openPR.url || '',
+    };
+  }
+
+  const author = issue.user?.login || '';
+  for (const comment of [...comments].reverse()) {
+    const login = comment.user?.login || '';
+    if (!login || login === author || isBotLogin(login)) continue;
+    const text = stripMarkdown(comment.body);
+    if (CLAIM_PATTERN.test(text)) {
+      return { claimed: true, reason: `${login} said they are working on it`, by: login, prUrl: '' };
+    }
+  }
+
+  return { claimed: false, reason: '', by: '', prUrl: '' };
+}
+
 function buildIssueFitScore(issue, comments = []) {
   const labels = new Set((issue.labels || []).map(label => String(label).toLowerCase()));
   const text = stripMarkdown(`${issue.title}\n${issue.body}\n${comments.map(comment => comment.body).join('\n')}`);
@@ -270,6 +309,11 @@ function buildIssueFitScore(issue, comments = []) {
     reasons.push('the issue explicitly warns that deeper human investigation is required');
   }
 
+  if (issue.claim && issue.claim.claimed) {
+    score -= 30;
+    reasons.unshift(`someone already owns this: ${issue.claim.reason}`);
+  }
+
   const normalizedScore = Math.max(1, Math.min(100, score));
   let band = 'Low fit';
   if (normalizedScore >= 75) band = 'High fit';
@@ -280,7 +324,8 @@ function buildIssueFitScore(issue, comments = []) {
   else if (normalizedScore >= 50) complexity = 'Medium';
 
   let recommendation = 'Avoid for first pass';
-  if (normalizedScore >= 60) recommendation = 'Recommended first PR';
+  if (issue.claim && issue.claim.claimed) recommendation = 'Avoid for first pass';
+  else if (normalizedScore >= 60) recommendation = 'Recommended first PR';
   else if (normalizedScore >= 50) recommendation = 'Worth considering';
 
   return {
@@ -293,7 +338,7 @@ function buildIssueFitScore(issue, comments = []) {
 }
 
 function buildIssueInsight(issue, comments = []) {
-  const recentConversation = comments.slice(0, 3).map(shapeConversation);
+  const recentConversation = comments.slice(-3).map(shapeConversation);
 
   return {
     ...buildIssueFitScore(issue, comments),
@@ -301,10 +346,12 @@ function buildIssueInsight(issue, comments = []) {
     expectationSummary: inferExpectation(issue, comments),
     quickPlan: inferQuickPlan(issue, comments),
     recentConversation,
+    claim: issue.claim || detectClaim(issue, comments, issue.linkedPRs || []),
   };
 }
 
 module.exports = {
+  detectClaim,
   buildIssueInsight,
   buildRepoOverview,
   buildIssueFitScore,

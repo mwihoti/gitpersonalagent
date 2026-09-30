@@ -82,6 +82,17 @@
             <article class="ops-card">
               <div class="section-heading">
                 <div>
+                  <p class="eyebrow">Learning loop</p>
+                  <h2>What your outcomes taught the ranker</h2>
+                </div>
+                <div id="learning-badge" class="status-pill">No signal yet</div>
+              </div>
+              <p id="learning-summary" class="hero-copy">Claim, dismiss, and ship items and the ranking adapts. Dismiss reasons from Telegram count too.</p>
+              <div id="learning-tags" class="list-meta"></div>
+            </article>
+            <article class="ops-card">
+              <div class="section-heading">
+                <div>
                   <p class="eyebrow">Operations</p>
                   <h2>Scan status</h2>
                 </div>
@@ -210,6 +221,7 @@
                   </div>
                   <a id="detail-issue-link" class="button button-secondary" target="_blank" rel="noreferrer">Open issue</a>
                 </div>
+                <div id="detail-live" class="live-strip hidden"></div>
 
                 <div class="detail-grid">
                   <label>
@@ -260,8 +272,11 @@
 
                 <div class="detail-actions">
                   <button type="submit" class="button button-primary">Save changes</button>
+                  <button type="button" id="detail-analyze-button" class="button button-secondary">Analyze issue</button>
                   <span id="save-status" class="save-status"></span>
                 </div>
+
+                <section id="detail-analysis" class="analysis-card hidden"></section>
 
                 <section class="context-grid">
                   <article class="context-card">

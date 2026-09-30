@@ -38,6 +38,18 @@ const FIELDS = [
     },
   },
   { name: 'Code Skeleton',     type: 'multilineText' },
+  // Tracking + deep analysis (added later; all optional)
+  { name: 'Source',            type: 'singleLineText' },
+  { name: 'Source URL',        type: 'url' },
+  { name: 'Issue Updated At',  type: 'singleLineText' },
+  { name: 'Score',             type: 'number',         options: { precision: 0 } },
+  { name: 'Impact',            type: 'singleSelect',   options: { choices: [{ name: 'low' }, { name: 'medium' }, { name: 'high' }] } },
+  { name: 'Maintainer Wants',  type: 'multilineText' },
+  { name: 'Files To Change',   type: 'multilineText' },
+  { name: 'Open Questions',    type: 'multilineText' },
+  { name: 'Analysis',          type: 'multilineText' },
+  { name: 'Labels',            type: 'singleLineText' },
+  { name: 'Language',          type: 'singleLineText' },
 ];
 
 async function createField(field) {
