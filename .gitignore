@@ -13,3 +13,7 @@ temp_interactive_push.bat
 .gitignore
 .vercel
 .env*
+
+# Demo recording artefacts (the mp4 is a build output, not source)
+demo/frames/
+demo/*.mp4

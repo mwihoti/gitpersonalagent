@@ -34,6 +34,7 @@ Rules:
 - If the material does not settle something, do not guess: put it in open_questions.
 - Prefer the narrowest change that fully resolves the request. Mention tests the project would expect.
 - code_skeleton must be consistent with the excerpts (same language, real identifiers). If no source was provided, keep it minimal and say what to look for.
+- Write like a contributor explaining the issue to a teammate: short sentences, specific behavior, named files, and direct next steps. Avoid promotional language, generic praise, and repeated summaries. Keep the first_comment_draft brief and natural; ask a specific question or state the work you intend to take on.
 
 Return ONLY a JSON object with exactly these keys:
 {

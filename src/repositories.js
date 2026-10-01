@@ -2,6 +2,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { fetchBitcoinDevsIssues, saveBitcoinDevsDiscovery } = require('./bitcoindevs');
+const { seedRepositories } = require('./bitcoin-ecosystem');
 const { assertRepositoryAccessible } = require('./github');
 
 const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
@@ -113,22 +114,43 @@ async function getScanTargets() {
     const savedDiscovery = await saveBitcoinDevsDiscovery(discovery);
     if (savedDiscovery.repos.length) {
       console.log(`  Using ${savedDiscovery.repos.length} BitcoinDevs good-first-issue repos as scan targets`);
+      return savedDiscovery;
     }
-    return savedDiscovery;
+    // The board answered but had nothing today. Fall through to the catalogue
+    // rather than returning an empty scan.
+    console.warn('  BitcoinDevs returned no issues; using the curated Bitcoin ecosystem list');
   } catch (error) {
     console.warn(`  BitcoinDevs discovery skipped: ${error.message}`);
-    return {
-      source: 'none',
-      sourceUrl: '',
-      repos: [],
-      issues: [],
-      error: error.message,
-    };
   }
+
+  return bitcoinEcosystemTargets();
+}
+
+// Last resort, and the thing that makes a fresh install useful: a curated list
+// of Bitcoin projects that actually take outside contributions. Before this,
+// an empty watchlist plus an unreachable BitcoinDevs board meant a scan with
+// nothing to scan.
+function bitcoinEcosystemTargets() {
+  const repos = seedRepositories(getEcosystemSeedLimit());
+  if (repos.length) {
+    console.log(`  Using ${repos.length} curated Bitcoin ecosystem repos as scan targets`);
+  }
+  return {
+    source: repos.length ? 'bitcoin-ecosystem' : 'none',
+    sourceUrl: '',
+    repos,
+    issues: [],
+  };
+}
+
+function getEcosystemSeedLimit() {
+  const parsed = Number.parseInt(process.env.BITCOIN_SEED_REPOS || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 12;
 }
 
 module.exports = {
   addRepository,
+  bitcoinEcosystemTargets,
   getScanRepositories,
   getScanTargets,
   listRepositories,

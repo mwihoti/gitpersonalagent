@@ -11,6 +11,12 @@ const { updateOpportunity } = require("./airtable");
 const { analyzeIssue } = require("./issue-analysis");
 const { parseIssueUrl } = require("./github");
 const { DISMISS_REASONS } = require("./feedback");
+const {
+  areaSummary,
+  classifyRepo,
+  listProjects,
+  normalizeArea,
+} = require("./bitcoin-ecosystem");
 
 // ─── WhatsApp via CallMeBot ───────────────────────────────────────────────────
 
@@ -235,6 +241,15 @@ async function setTelegramCommands(botToken) {
               description: "Check whether the bot is running",
             },
             { command: "help", description: "Show available commands" },
+            {
+              command: "projects",
+              description: "Bitcoin projects by area: /projects lightning",
+            },
+            { command: "areas", description: "Areas of the Bitcoin ecosystem" },
+            {
+              command: "issues",
+              description: "What is open right now: /issues privacy",
+            },
             { command: "analyze", description: "Deep read of one issue: /analyze <issue url>" },
             { command: "pr", description: "Link your PR: /pr <issue url> <pr url>" },
             {
@@ -279,6 +294,11 @@ async function sendNotification(message, options = {}) {
 
 const TELEGRAM_MESSAGE_LIMIT = 3900;
 const DIGEST_PARSE_MODE = "HTML";
+
+// Appended to /help for everyone. These three need no subscription, so a
+// newcomer can explore before committing to a daily digest.
+const BROWSE_HELP =
+  "\n\nBrowse (no subscription needed):\n/projects - Bitcoin projects by area\n/areas - areas of the ecosystem\n/issues - what is open right now";
 
 function cleanText(value) {
   return String(value || "")
@@ -721,6 +741,129 @@ async function findActivityLog(recordId) {
   }
 }
 
+// ── Community browsing ───────────────────────────────────────────────────
+//
+// /scan, /analyze and /pr all require a subscription and do real work. The
+// three commands below are read-only and open to anyone: a Bitcoiner who has
+// just found the bot can see which projects are covered and what is currently
+// worth picking up, without triggering a scan or being asked to subscribe.
+
+// The word after the command, e.g. "/projects lightning" → "lightning".
+function commandArgument(text) {
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .slice(1)
+    .join(" ")
+    .trim();
+}
+
+function projectsReply(text) {
+  const requested = commandArgument(text);
+  const area = requested ? normalizeArea(requested) : "";
+
+  if (requested && !area) {
+    return `I don't know the area "${escapeHtml(requested)}". Send /areas to see the list.`;
+  }
+
+  const projects = listProjects({ area, limit: area ? 20 : 0 });
+  if (!projects.length) {
+    return "No projects listed for that area yet.";
+  }
+
+  if (!area) {
+    // No area given: show the map rather than 42 lines of repos.
+    const lines = areaSummary()
+      .filter((entry) => entry.projectCount > 0)
+      .map(
+        (entry) =>
+          `<b>${escapeHtml(entry.label)}</b> — ${entry.projectCount} project${entry.projectCount === 1 ? "" : "s"}\n<code>/projects ${entry.area}</code>`,
+      );
+    return [
+      `<b>Bitcoin projects I watch</b> (${projects.length} total)`,
+      "",
+      lines.join("\n\n"),
+      "",
+      "Send <code>/issues</code> for what is open right now.",
+    ].join("\n");
+  }
+
+  const lines = projects.map(
+    (project) =>
+      `<a href="https://github.com/${project.repo}">${escapeHtml(project.repo)}</a> · ${escapeHtml(project.language)} · ${escapeHtml(project.level)}\n${escapeHtml(project.blurb)}`,
+  );
+  return [
+    `<b>${escapeHtml(areaLabel(area))}</b>`,
+    "",
+    lines.join("\n\n"),
+    "",
+    "Add any of these to your watchlist on the dashboard, or send <code>/analyze &lt;issue url&gt;</code> for a deep read of one issue.",
+  ].join("\n");
+}
+
+function areaLabel(area) {
+  const entry = areaSummary().find((item) => item.area === area);
+  return entry ? entry.label : area;
+}
+
+function areasReply() {
+  const lines = areaSummary().map(
+    (entry) =>
+      `<b>${escapeHtml(entry.label)}</b> (<code>${entry.area}</code>) — ${entry.projectCount}\n${escapeHtml(entry.blurb)}`,
+  );
+  return [
+    "<b>Areas of the Bitcoin ecosystem</b>",
+    "",
+    lines.join("\n\n"),
+    "",
+    "Use <code>/projects &lt;area&gt;</code> to list the repos in one.",
+  ].join("\n");
+}
+
+// Reads what the last scan already found. Deliberately does NOT trigger a
+// scan: this has to answer instantly for anyone, including on serverless.
+async function openIssuesReply(text) {
+  const requested = commandArgument(text);
+  const area = requested ? normalizeArea(requested) : "";
+  if (requested && !area) {
+    return `I don't know the area "${escapeHtml(requested)}". Send /areas to see the list.`;
+  }
+
+  const { listOpportunities } = require("./airtable");
+  const { opportunities } = await listOpportunities();
+
+  const available = opportunities
+    .filter((item) => {
+      const status = String(item.status || "").toLowerCase();
+      if (status === "done" || status === "in progress") return false;
+      if (!item.issueUrl) return false;
+      if (area && classifyRepo(item.repo).area !== area) return false;
+      return true;
+    })
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+    .slice(0, 8);
+
+  if (!available.length) {
+    return area
+      ? `Nothing open in ${escapeHtml(areaLabel(area))} right now. Try <code>/issues</code> for every area.`
+      : "The queue is empty. A scan runs daily — send /start to get the digest when it lands.";
+  }
+
+  const lines = available.map((item) => {
+    const area_ = classifyRepo(item.repo);
+    const tags = [item.effort, area_.label].filter(Boolean).join(" · ");
+    return `<a href="${escapeHtml(item.issueUrl)}">${escapeHtml(item.opportunity || item.repo)}</a>\n<code>${escapeHtml(item.repo)}</code>${tags ? ` · ${escapeHtml(tags)}` : ""}`;
+  });
+
+  return [
+    area ? `<b>Open in ${escapeHtml(areaLabel(area))}</b>` : "<b>Open right now</b>",
+    "",
+    lines.join("\n\n"),
+    "",
+    "Send <code>/analyze &lt;issue url&gt;</code> and I will read the thread, linked PRs, and source before you start.",
+  ].join("\n");
+}
+
 async function handleTelegramUpdate(update, onScan, bot) {
   if (update && update.callback_query) {
     return handleCallbackQuery(update.callback_query, bot);
@@ -739,7 +882,7 @@ async function handleTelegramUpdate(update, onScan, bot) {
   if (command === "start" || command === "subscribe") {
     await subscribeTelegramChat(msg.chat, botId);
     await reply(
-      "You are subscribed. You will receive the daily Repository Intelligence Digest here. Send /stop to unsubscribe.\n\nScan commands:\n/scan - top prioritized issues\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues",
+      "You are subscribed. Every morning you get the Bitcoin contribution digest: which issues opened, which moved, and which are genuinely unclaimed.\n\nStart here:\n/projects - the Bitcoin projects I watch\n/issues - what is open right now\n/analyze <issue url> - deep read before you start\n\nScan commands:\n/scan - top prioritized issues\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues\n\nSend /stop to unsubscribe.",
     );
   } else if (command === "stop" || command === "unsubscribe") {
     await unsubscribeTelegramChat(chatId, botId);
@@ -820,6 +963,22 @@ async function handleTelegramUpdate(update, onScan, bot) {
     } catch (e) {
       await reply(`Analysis failed: ${e.message}`);
     }
+  } else if (command === "projects" || command === "repos") {
+    await sendTelegramToChat(chatId, projectsReply(msg.text), token, {
+      parseMode: DIGEST_PARSE_MODE,
+    });
+  } else if (command === "areas") {
+    await sendTelegramToChat(chatId, areasReply(), token, {
+      parseMode: DIGEST_PARSE_MODE,
+    });
+  } else if (command === "issues") {
+    try {
+      await sendTelegramToChat(chatId, await openIssuesReply(msg.text), token, {
+        parseMode: DIGEST_PARSE_MODE,
+      });
+    } catch (e) {
+      await reply(`Could not read the queue: ${e.message}`);
+    }
   } else if (command === "status") {
     await reply(
       (await isSubscriber(chatId, botId))
@@ -829,8 +988,8 @@ async function handleTelegramUpdate(update, onScan, bot) {
   } else if (command === "help") {
     await reply(
       (await isSubscriber(chatId, botId))
-        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
-        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot",
+        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues" + BROWSE_HELP
+        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot" + BROWSE_HELP,
     );
   }
 }

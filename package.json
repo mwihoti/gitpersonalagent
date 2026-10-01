@@ -12,7 +12,10 @@
     "dedupe-airtable": "node scripts/dedupe-airtable.js",
     "check-models": "node scripts/check-models.js",
     "dev": "node dev-server.js",
-    "test": "node --test --test-concurrency=1"
+    "test": "node --test --test-concurrency=1",
+    "demo:seed": "node scripts/seed-demo-data.js",
+    "demo:record": "node scripts/record-demo.js",
+    "demo:encode": "ffmpeg -y -framerate 20 -i demo/frames/%05d.png -vf \"scale=1920:1080:flags=lanczos,format=yuv420p\" -r 30 -c:v libx264 -preset slow -crf 19 -movflags +faststart demo/bitcoin-contributor-demo.mp4"
   },
   "keywords": [
     "github",
