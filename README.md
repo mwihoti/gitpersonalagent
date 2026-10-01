@@ -147,7 +147,8 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 | `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
 | `/status` | Anyone | Confirms the bot is running |
 | `/help` | Anyone | Shows available commands |
-| `/scan` | Admin chat only | Runs the normal top-priority scan immediately |
+| `/scan` | Admin chat only | Runs the normal top-priority scan immediately (15 issues) |
+| `/scan 25` | Admin chat only | Same, asking for 25 issues; works with any mode, e.g. `/scan all 30` |
 | `/scan all` | Admin chat only | Scans a broader set of open issues |
 | `/scan goodfirst` | Admin chat only | Focuses on good-first/BitcoinDevs issues |
 | `/scan medium` | Admin chat only | Focuses on medium-effort implementation issues |
@@ -292,7 +293,11 @@ FALLBACK_MODELS=meta-llama/llama-3.3-70b-instruct,mistralai/mistral-small
 
 Groq's free tier allows **8,000 tokens per minute per model**, counting the
 prompt and the requested answer. A full scan is far bigger than that, so the
-pipeline budgets for it (`GROQ_TPM`, default `8000`):
+pipeline budgets for it. The limit is **read from the API's own
+`x-ratelimit-limit-tokens` header** on the first response, so upgrading your
+Groq tier takes effect on the next scan with no configuration. `GROQ_TPM`
+overrides it when set (`0` means no limit); the built-in default before the
+first response is `8000`.
 
 - Prompts are **built to fit**: the digest input drops detail per issue before
   it drops repositories, triage sends one compact line per candidate, and the
@@ -442,6 +447,12 @@ More behaviours worth knowing:
 - **Two bots.** Add `TELEGRAM_BOT_TOKEN_2` to the Actions environment so both
   audiences get digests. A chat subscribed to both bots receives one copy, and
   an on-demand scan answers through the bot it was requested on.
+- **The queue cleans itself.** Each daily scan retires records whose issue
+  closed upstream, notes a new assignee once, and archives items that nobody
+  touched for `QUEUE_ARCHIVE_DAYS` (default 90). Archived and closed-upstream
+  items carry no weight in the learning loop. Run it by hand, and give the
+  survivors a deep analysis, with
+  `npm run refresh-queue -- --apply --analyze 10` (dry run without `--apply`).
 - **Storage problems are shown.** If Airtable refuses new rows (the free plan
   caps records per base), the digest says so. Run
   `npm run dedupe-airtable -- --apply` to clear duplicate rows.
@@ -452,9 +463,10 @@ are set to `Done` (or whichever option your Status field maps to).
 
 | Variable | Default | Effect |
 |---|---|---|
+| `DIGEST_OPPORTUNITY_LIMIT` | `15` | Picks a plain scan asks the model for (`/scan all` 24, `goodfirst` 16, `medium` 12, weekly 12). `/scan 25` overrides it for one run |
 | `DIGEST_MAX_PER_REPO` | `2` | Cap on opportunities per repository in one digest (`0` disables) |
-| `DIGEST_DETAIL_LIMIT` | `8` | Maximum per-item detail messages |
-| `DIGEST_INDEX_LIMIT` | `12` | Maximum lines in the summary index |
+| `DIGEST_DETAIL_LIMIT` | `15` | Maximum per-item detail messages |
+| `DIGEST_INDEX_LIMIT` | `20` | Maximum lines in the summary index |
 | `DIGEST_STILL_OPEN_LIMIT` | `8` | Lines in the Still open section |
 | `DIGEST_TRACK_DAYS` | `21` | How far back tracked issues are re-checked for closure or claims |
 | `DIGEST_STATUS_CHECKS` | `30` | Maximum GitHub status checks per run |
@@ -462,7 +474,7 @@ are set to `Done` (or whichever option your Status field maps to).
 | `GITHUB_FETCH_TIMELINE` | `true` | Set `false` to skip linked-PR lookups (saves one request per issue) |
 | `SCAN_MODE` | `default` | Mode for `node agent.js --scan`; the daily workflow reads the `DAILY_SCAN_MODE` repository variable |
 | `DIGEST_BODY_CHARS` | `1500` | Issue body characters sent to the digest model (was 120) |
-| `DIGEST_ANALYZE_LIMIT` | `8` | Opportunities that get the deep analysis per scan |
+| `DIGEST_ANALYZE_LIMIT` | all picks | Cap on deep analyses per scan |
 | `DIGEST_DEEP_ANALYSIS` | `true` | Set `false` to skip deep analysis in scans |
 
 Messages use Telegram HTML (linked titles, `code` spans). If Telegram rejects a

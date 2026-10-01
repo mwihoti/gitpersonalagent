@@ -25,7 +25,14 @@ async function main() {
   const results = await probeModels();
   for (const r of results) {
     const mark = r.ok ? 'OK  ' : 'FAIL';
-    console.log(`${mark} ${r.provider.padEnd(9)} ${r.model.padEnd(34)} ${String(r.status).padEnd(4)} ${String(r.ms).padStart(5)}ms  ${r.detail}`);
+    const limit = r.limitTokens ? `${r.limitTokens.toLocaleString()} tok/min` : '';
+    console.log(`${mark} ${r.provider.padEnd(9)} ${r.model.padEnd(34)} ${String(r.status).padEnd(4)} ${String(r.ms).padStart(5)}ms  ${limit.padEnd(16)} ${r.detail}`);
+  }
+  const limited = results.filter(r => r.limitTokens);
+  if (limited.length) {
+    const best = Math.max(...limited.map(r => r.limitTokens));
+    console.log(`\nRate limit reported by the API: ${best.toLocaleString()} tokens per minute. Scans size their prompts to this automatically.`);
+    if (best <= 20000) console.log('That is a small budget: the model will see short excerpts. A higher tier or another provider gives it full issues and threads.');
   }
 
   if (process.argv.includes('--list')) {

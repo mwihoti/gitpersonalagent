@@ -68,22 +68,36 @@ function normalizeCommand(text) {
 }
 
 function parseScanMode(text) {
+  return parseScanRequest(text).mode;
+}
+
+// "/scan", "/scan 20", "/scan all", "/scan goodfirst 10", "/scan 10 medium"
+// → { mode, limit }. limit is 0 when not given (the deployment default applies).
+function parseScanRequest(text) {
   const parts = String(text || "")
     .trim()
     .toLowerCase()
     .split(/\s+/)
     .slice(1);
-  const mode = parts[0] || "default";
-  if (mode === "all" || mode === "everything") return "all";
-  if (
-    mode === "goodfirst" ||
-    mode === "good-first" ||
-    mode === "good_first" ||
-    mode === "good"
-  )
-    return "goodfirst";
-  if (mode === "medium" || mode === "med") return "medium";
-  return "default";
+  let mode = "default";
+  let limit = 0;
+  for (const part of parts) {
+    if (/^\d{1,3}$/.test(part)) {
+      limit = Math.max(1, Math.min(50, Number(part)));
+    } else if (part === "all" || part === "everything") {
+      mode = "all";
+    } else if (["goodfirst", "good-first", "good_first", "good"].includes(part)) {
+      mode = "goodfirst";
+    } else if (part === "medium" || part === "med") {
+      mode = "medium";
+    }
+  }
+  return { mode, limit };
+}
+
+function defaultScanLimit() {
+  const value = Number(process.env.DIGEST_OPPORTUNITY_LIMIT);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 15;
 }
 
 function scanModeLabel(mode) {
@@ -239,7 +253,7 @@ async function setTelegramCommands(botToken) {
             { command: "pr", description: "Link your PR: /pr <issue url> <pr url>" },
             {
               command: "scan",
-              description: "Run scan: /scan all, /scan goodfirst, /scan medium",
+              description: "Run scan: /scan 20, /scan all, /scan goodfirst, /scan medium",
             },
           ],
         }),
@@ -407,7 +421,7 @@ function classifyDigest(digest) {
 
 function buildDigestMessage(digest) {
   const { changes, numbered, fresh, updated, repeated, updatedByUrl } = classifyDigest(digest);
-  const indexLimit = envLimit("DIGEST_INDEX_LIMIT", 12);
+  const indexLimit = envLimit("DIGEST_INDEX_LIMIT", 20);
   const closedLimit = envLimit("DIGEST_CLOSED_LIMIT", 6);
   const stillOpenLimit = envLimit("DIGEST_STILL_OPEN_LIMIT", 8);
   const date = cleanText(digest.date) || new Date().toISOString().slice(0, 10);
@@ -479,6 +493,12 @@ function buildDigestMessage(digest) {
 
   if (digest.weekly_review) {
     sections.push(weeklyReviewSection(digest.weekly_review));
+  }
+
+  const hk = digest.housekeeping;
+  if (hk && (hk.archive || hk.close)) {
+    const bits = [hk.close ? `${hk.close} closed upstream` : "", hk.archive ? `${hk.archive} archived after ${process.env.QUEUE_ARCHIVE_DAYS || 90} days untouched` : ""].filter(Boolean);
+    sections.push(`Housekeeping: ${html(bits.join(", "))}.`);
   }
 
   if (numbered.length && digest.quick_plan) {
@@ -613,7 +633,7 @@ function buildOpportunityMessage(item, index, total, options = {}) {
 }
 
 function buildDigestMessages(digest) {
-  const detailLimit = envLimit("DIGEST_DETAIL_LIMIT", 8);
+  const detailLimit = envLimit("DIGEST_DETAIL_LIMIT", 15);
   const { changes, fresh, updated, repeated, updatedByUrl } = classifyDigest(digest);
   // New and updated items get a detail message. Repeats only appear when a
   // scan was explicitly run without dedupe, so they are detailed too.
@@ -739,7 +759,7 @@ async function handleTelegramUpdate(update, onScan, bot) {
   if (command === "start" || command === "subscribe") {
     await subscribeTelegramChat(msg.chat, botId);
     await reply(
-      "You are subscribed. You will receive the daily Repository Intelligence Digest here. Send /stop to unsubscribe.\n\nScan commands:\n/scan - top prioritized issues\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues",
+      "You are subscribed. You will receive the daily Repository Intelligence Digest here. Send /stop to unsubscribe.\n\nScan commands:\n/scan - top prioritized issues (15)\n/scan 25 - ask for a different number\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues",
     );
   } else if (command === "stop" || command === "unsubscribe") {
     await unsubscribeTelegramChat(chatId, botId);
@@ -751,14 +771,16 @@ async function handleTelegramUpdate(update, onScan, bot) {
       );
       return;
     }
-    const scanMode = parseScanMode(msg.text);
-    await reply(`Got it — starting ${scanModeLabel(scanMode)} scan now...`);
+    const { mode: scanMode, limit } = parseScanRequest(msg.text);
+    const wanted = limit || defaultScanLimit();
+    await reply(`Got it — starting ${scanModeLabel(scanMode)} scan for up to ${wanted} issues... (send /scan 20 or /scan all 30 to change the number)`);
     try {
       // chatId lets serverless callers report back to the requester; runScan
       // ignores the extra keys, so long-polling mode is unaffected.
       const result = await onScan({
         trigger: `telegram-${scanMode}`,
         scanMode,
+        opportunityLimit: limit || 0,
         dedupe: false,
         chatId,
         botId,
@@ -829,7 +851,7 @@ async function handleTelegramUpdate(update, onScan, bot) {
   } else if (command === "help") {
     await reply(
       (await isSubscriber(chatId, botId))
-        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
+        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues (15)\n/scan 25 - ask for 25 instead\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues"
         : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot",
     );
   }
@@ -920,4 +942,5 @@ module.exports = {
   setTelegramCommands,
   normalizeCommand,
   parseScanMode,
+  parseScanRequest,
 };

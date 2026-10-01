@@ -27,6 +27,10 @@ on:
         description: 'Bot the scan was requested on, so the digest answers there (optional)'
         required: false
         default: ''
+      limit:
+        description: 'How many issues to ask for (optional, default 15)'
+        required: false
+        default: ''
 
 concurrency:
   # One scan at a time across every workflow: parallel scans fight over the
@@ -59,6 +63,7 @@ jobs:
           # The explicit modes (/scan all|goodfirst|medium) show everything again.
           SCAN_DEDUPE: ${{ (github.event.client_payload.scan_mode || inputs.scan_mode || 'default') == 'default' && 'true' || 'false' }}
           SCAN_REPLY_BOT: ${{ github.event.client_payload.bot_id || inputs.bot_id || '' }}
+          SCAN_LIMIT: ${{ github.event.client_payload.limit || inputs.limit || '' }}
           SCAN_TRIGGER: telegram-actions
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -70,6 +75,7 @@ jobs:
           MODEL_PROVIDERS: ${{ vars.MODEL_PROVIDERS }}       # order, e.g. groq,xai,gemini
           GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
           GROQ_MODELS: ${{ vars.GROQ_MODELS }}
+          GROQ_TPM: ${{ vars.GROQ_TPM }}  # optional; unset = read from the API
           XAI_MODELS: ${{ vars.XAI_MODELS }}
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}

@@ -224,3 +224,30 @@ test('requests are sized to a tokens-per-minute budget and keep the closing inst
   assert.equal(providers.promptBudget({ system: '', maxTokens: 12000 }), Infinity);
   assert.equal(providers.isTightBudget(), false);
 });
+
+test('the rate limit reported by the API replaces the default budget unless an env override is set', async t => {
+  const calls = setup(t, { GROQ_API_KEY: 'g', GROQ_MODELS: 'm' }, () => ({
+    ok: true,
+    headers: { get: name => (name === 'x-ratelimit-limit-tokens' ? '300000' : null) },
+    json: async () => ({ choices: [{ message: { content: '{"ok":1}' } }] }),
+  }));
+  const prevLog = console.log;
+  const logs = [];
+  console.log = m => logs.push(m);
+  t.after(() => { console.log = prevLog; });
+
+  assert.equal(providers.isTightBudget(), true, 'before any call the free-tier default applies');
+  await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+  assert.equal(providers.isTightBudget(), false, 'after one response the real limit is known');
+  assert.equal(providers.describeProviders()[0].tpm, 300000);
+  assert.ok(logs.some(m => /rate limit is 300000 tokens\/min/.test(m)));
+
+  const probe = await providers.probeModels();
+  assert.equal(probe[0].limitTokens, 300000);
+
+  process.env.GROQ_TPM = '8000';
+  providers.resetProviderState();
+  await providers.runChain({ system: 's', user: 'u', parse: JSON.parse, logger: quiet });
+  assert.equal(providers.isTightBudget(), true, 'an explicit override is respected');
+  assert.equal(calls.length, 3);
+});
