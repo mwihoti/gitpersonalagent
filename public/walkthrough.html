@@ -1,0 +1,1126 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A guide to finding Bitcoin projects, reviewing open issues, and tracking your pull requests with DanAgent.">
+<title>How it works · DanAgent</title>
+<style>
+:root {
+  --ground: #f6f7f5;
+  --ground-sunk: #eef1ed;
+  --surface: #ffffff;
+  --surface-2: #f8faf7;
+  --ink: #161f1a;
+  --ink-soft: #3f4d46;
+  --muted: #5e6e66;
+  --line: rgba(22, 31, 26, 0.12);
+  --line-firm: rgba(22, 31, 26, 0.22);
+  --accent: #345744;
+  --accent-deep: #244332;
+  --accent-wash: rgba(52, 87, 68, 0.08);
+
+  --st-open: #1f7d69;
+  --st-open-wash: rgba(31, 125, 105, 0.12);
+  --st-stale: #a8761d;
+  --st-stale-wash: rgba(168, 118, 29, 0.13);
+  --st-taken: #993434;
+  --st-taken-wash: rgba(153, 52, 52, 0.11);
+
+  --chat-bg: #e7e2d6;
+  --chat-them: #ffffff;
+  --chat-you: #d9ecdf;
+
+  --step: clamp(2.6rem, 5vw, 3.4rem);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #14181a;
+    --ground-sunk: #0e1113;
+    --surface: #1c2224;
+    --surface-2: #232a2c;
+    --ink: #e8e6df;
+    --ink-soft: #c2c7c2;
+    --muted: #8d9a94;
+    --line: rgba(232, 230, 223, 0.14);
+    --line-firm: rgba(232, 230, 223, 0.26);
+    --accent: #e8874f;
+    --accent-deep: #f0a578;
+    --accent-wash: rgba(232, 135, 79, 0.14);
+
+    --st-open: #4fbba0;
+    --st-open-wash: rgba(79, 187, 160, 0.15);
+    --st-stale: #d3a154;
+    --st-stale-wash: rgba(211, 161, 84, 0.15);
+    --st-taken: #d97070;
+    --st-taken-wash: rgba(217, 112, 112, 0.14);
+
+    --chat-bg: #10161a;
+    --chat-them: #1f272a;
+    --chat-you: #24413a;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #14181a;
+  --ground-sunk: #0e1113;
+  --surface: #1c2224;
+  --surface-2: #232a2c;
+  --ink: #e8e6df;
+  --ink-soft: #c2c7c2;
+  --muted: #8d9a94;
+  --line: rgba(232, 230, 223, 0.14);
+  --line-firm: rgba(232, 230, 223, 0.26);
+  --accent: #e8874f;
+  --accent-deep: #f0a578;
+  --accent-wash: rgba(232, 135, 79, 0.14);
+
+  --st-open: #4fbba0;
+  --st-open-wash: rgba(79, 187, 160, 0.15);
+  --st-stale: #d3a154;
+  --st-stale-wash: rgba(211, 161, 84, 0.15);
+  --st-taken: #d97070;
+  --st-taken-wash: rgba(217, 112, 112, 0.14);
+
+  --chat-bg: #10161a;
+  --chat-them: #1f272a;
+  --chat-you: #24413a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 24px 96px;
+}
+
+h1, h2, h3, .ui {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  text-wrap: balance;
+}
+
+code, .mono { font-family: ui-monospace, Consolas, monospace; }
+
+a { color: var(--accent-deep); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ── Masthead ─────────────────────────────────────────────────────────── */
+
+.masthead {
+  padding: 32px 0;
+  border-bottom: 1px solid var(--line-firm);
+}
+
+.kicker {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  margin: 0 0 18px;
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: clamp(1.9rem, 4vw, 2.6rem);
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.024em;
+  max-width: 26ch;
+}
+
+.standfirst {
+  margin: 22px 0 0;
+  max-width: 62ch;
+  font-size: 1.08rem;
+  color: var(--ink-soft);
+}
+
+.standfirst em {
+  font-style: normal;
+  background: var(--accent-wash);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+
+.masthead-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+  margin-top: 30px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.masthead-meta b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Steps ────────────────────────────────────────────────────────────── */
+
+.step {
+  display: grid;
+  grid-template-columns: var(--step) minmax(0, 1fr);
+  gap: 0 28px;
+  padding: 40px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.step-num {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-deep);
+  padding-top: 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-num::before {
+  content: '';
+  display: block;
+  width: 26px;
+  height: 2px;
+  background: var(--accent);
+  margin-bottom: 12px;
+}
+
+.step-body { min-width: 0; }
+
+.step h2 {
+  margin: 0 0 10px;
+  font-size: clamp(1.4rem, 2.6vw, 1.85rem);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+.step > .step-body > p {
+  margin: 0 0 16px;
+  max-width: 64ch;
+  color: var(--ink-soft);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+  gap: 28px;
+  align-items: start;
+  margin-top: 24px;
+}
+
+.aside p { margin: 0 0 14px; max-width: 46ch; color: var(--ink-soft); }
+.aside p:last-child { margin-bottom: 0; }
+
+.pullquote {
+  margin: 0;
+  padding-left: 16px;
+  border-left: 2px solid var(--accent);
+  font-size: 1.04rem;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+/* ── Mock chrome (shared) ─────────────────────────────────────────────── */
+
+.mock {
+  border: 1px solid var(--line-firm);
+  border-radius: 5px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.mock-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.dots { display: flex; gap: 5px; }
+.dots i {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--line-firm);
+}
+
+.mock-pad { padding: 18px; }
+
+/* ── Catalogue browser ───────────────────────────────────────────────── */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.chip {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.72rem;
+  padding: 5px 11px;
+  border: 1px solid var(--line-firm);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+
+.chip:hover { border-color: var(--accent); color: var(--accent-deep); }
+
+.chip[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fffcf6;
+}
+
+:root[data-theme="dark"] .chip[aria-pressed="true"],
+.chip[aria-pressed="true"] { color: #fffcf6; }
+
+.chip b { font-weight: 500; opacity: .62; margin-left: 5px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(244px, 1fr));
+  gap: 10px;
+  max-height: 460px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.proj {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.proj-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proj a {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+  overflow-wrap: break-word;
+  line-height: 1.35;
+}
+
+.proj a:hover { color: var(--accent-deep); text-decoration: underline; }
+
+.proj p {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.lvl {
+  flex-shrink: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.lvl-newcomer { background: var(--st-open-wash); color: var(--st-open); }
+.lvl-intermediate { background: var(--accent-wash); color: var(--accent-deep); }
+.lvl-deep { background: var(--line); color: var(--muted); }
+
+.lang {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: auto;
+}
+
+.grid-empty {
+  grid-column: 1 / -1;
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+/* ── State machine (the thesis) ──────────────────────────────────────── */
+
+.thesis {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 34px;
+  border: 1px solid var(--line-firm);
+  border-radius: 14px;
+  background: var(--ground-sunk);
+}
+
+.states {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.state {
+  padding: 15px 16px;
+  border-radius: 9px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--sc, var(--muted));
+}
+
+.state-name {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--sc, var(--ink));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.state-verdict {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.62rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--sw, var(--line));
+  color: var(--sc, var(--muted));
+  margin-left: auto;
+}
+
+.state p {
+  margin: 7px 0 0;
+  font-size: 0.83rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.s-open { --sc: var(--st-open); --sw: var(--st-open-wash); }
+.s-stale { --sc: var(--st-stale); --sw: var(--st-stale-wash); }
+.s-taken { --sc: var(--st-taken); --sw: var(--st-taken-wash); }
+.s-none { --sc: var(--muted); --sw: var(--line); }
+
+/* ── Telegram ────────────────────────────────────────────────────────── */
+
+.tg { background: var(--chat-bg); padding: 16px; min-height: 340px; }
+
+.msg {
+  max-width: 88%;
+  padding: 10px 13px;
+  border-radius: 13px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-bottom: 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-you {
+  margin-left: auto;
+  background: var(--chat-you);
+  border-bottom-right-radius: 4px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--ink);
+}
+
+.msg-bot {
+  background: var(--chat-them);
+  border-bottom-left-radius: 4px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.msg-bot b { font-weight: 600; }
+.msg-bot code {
+  font-size: 0.82em;
+  background: var(--accent-wash);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  color: var(--accent-deep);
+}
+.msg-bot a { color: var(--accent-deep); overflow-wrap: anywhere; }
+
+.tg-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 13px 16px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+}
+
+.key {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.74rem;
+  padding: 6px 12px;
+  border: 1px solid var(--line-firm);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+
+.key:hover { border-color: var(--accent); color: var(--accent-deep); }
+.key:disabled { opacity: .45; cursor: default; }
+
+.tg-hint {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.68rem;
+  color: var(--muted);
+  padding: 0 16px 13px;
+  background: var(--surface-2);
+  margin: 0;
+}
+
+/* ── Digest ──────────────────────────────────────────────────────────── */
+
+.digest-sec {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.68rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+.digest-sec:first-child { margin-top: 0; }
+
+.ditem {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+
+.ditem-repo {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.74rem;
+  color: var(--muted);
+  flex-shrink: 0;
+  width: 128px;
+  overflow-wrap: anywhere;
+}
+
+.ditem-txt { flex: 1; min-width: 0; color: var(--ink-soft); }
+
+.tick {
+  flex-shrink: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.62rem;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.tick-open { background: var(--st-open-wash); color: var(--st-open); }
+.tick-taken { background: var(--st-taken-wash); color: var(--st-taken); }
+.tick-stale { background: var(--st-stale-wash); color: var(--st-stale); }
+
+/* ── Setup ───────────────────────────────────────────────────────────── */
+
+.term {
+  background: var(--ground-sunk);
+  border: 1px solid var(--line-firm);
+  border-radius: 5px;
+  padding: 16px 18px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.79rem;
+  line-height: 1.75;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--ink-soft);
+}
+
+.term .p { color: var(--accent-deep); user-select: none; }
+.term .c { color: var(--muted); }
+.term b { color: var(--ink); font-weight: 500; }
+
+.note {
+  margin-top: 20px;
+  padding: 15px 17px;
+  border-left: 3px solid var(--st-stale);
+  background: var(--st-stale-wash);
+  border-radius: 0 8px 8px 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.note b { color: var(--ink); }
+
+.closing {
+  padding: 56px 0 0;
+  max-width: 64ch;
+}
+
+.closing h2 { font-size: 1.5rem; margin: 0 0 14px; }
+.closing p { color: var(--ink-soft); }
+
+@media (max-width: 860px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .step { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .step-num { padding-top: 0; margin-bottom: 14px; }
+  .ditem { flex-wrap: wrap; }
+  .ditem-repo { width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+.guide-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.guide-nav a { text-decoration: none; }
+.guide-nav a:hover { text-decoration: underline; }
+.guide-nav strong { font-size: 15px; letter-spacing: -0.03em; }
+.dots { display: none; }
+.mock-bar { font-size: 12px; }
+@media (max-width: 600px) { .wrap { padding: 0 16px 48px; } .step { padding: 28px 0; } .masthead-meta { gap: 8px 16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="guide-nav" aria-label="Guide navigation"><a href="/"><strong>DanAgent</strong></a><a href="/">← Back to your queue</a></nav>
+
+  <header class="masthead">
+    <p class="kicker">How it works</p>
+    <h1>Working on Bitcoin issues</h1>
+    <p class="standfirst">
+      DanAgent checks Bitcoin repositories for open issues and helps you
+      decide where to start. Use the dashboard or Telegram to review the
+      discussion, see whether someone is already working on an issue, and
+      track your pull request.
+    </p>
+    <div class="masthead-meta">
+      <span><b id="guide-project-count">42</b> projects in the directory</span>
+      <span><b id="guide-area-count">11</b> areas</span>
+      <span>Dashboard + Telegram</span>
+    </div>
+  </header>
+
+  <!-- 1 ─────────────────────────────────────────────────────────────── -->
+  <section class="step">
+    <div class="step-num">01</div>
+    <div class="step-body">
+      <h2>Choose a project</h2>
+      <p>
+        Browse node software, Lightning, wallets, privacy tools, and other
+        Bitcoin projects. Choose an area below to narrow the directory.
+      </p>
+      <div class="split">
+        <div class="aside">
+          <p class="pullquote">
+            Experience labels describe how much Bitcoin knowledge a project
+            usually needs. The scope of individual issues varies.
+          </p>
+          <p style="margin-top:16px">
+            A familiar language is a useful starting point. Read the project’s
+            contribution guide and a few recent issues to see whether the work
+            fits your experience.
+          </p>
+          <p>
+            Add a project to your watchlist on the dashboard to include it in
+            future scans. You can also add a GitHub repository that isn’t in
+            this directory.
+          </p>
+        </div>
+        <div class="mock">
+          <div class="mock-bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span>Project directory</span>
+          </div>
+          <div class="mock-pad">
+            <div class="chips" id="chips"></div>
+            <div class="grid" id="grid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 ─────────────────────────────────────────────────────────────── -->
+  <section class="step">
+    <div class="step-num">02</div>
+    <div class="step-body">
+      <h2>Run a scan</h2>
+      <p>
+        Click <b>Run scan</b> on the dashboard. You can start with an empty
+        watchlist or add the repositories you want to follow.
+      </p>
+      <div class="split">
+        <div class="aside">
+          <p>
+            Scans check your watchlist first. With an empty watchlist, they
+            use the BitcoinDevs good-first-issue board. If the board is
+            unavailable or empty, they check projects from the directory.
+          </p>
+          <p>
+            If you host DanAgent yourself, set <code>BITCOIN_FOCUS_AREAS</code>
+            and <code>PREFERRED_LANGUAGES</code> to give matching issues more
+            weight. Other issues can still appear.
+          </p>
+        </div>
+        <div>
+          <div class="term">
+<span class="c"># repository sources, in order</span>
+<span class="p">$</span> <b>watchlist</b>       <span class="c">→ repos you added yourself</span>
+<span class="p">$</span> <b>bitcoindevs.xyz</b> <span class="c">→ the good-first-issue board</span>
+<span class="p">$</span> <b>catalogue</b>       <span class="c">→ 42 curated repos, 11 areas</span>
+
+<span class="c"># optional preferences in your .env file</span>
+<span class="p">$</span> BITCOIN_FOCUS_AREAS=<b>lightning,privacy</b>
+<span class="p">$</span> PREFERRED_LANGUAGES=<b>Rust,TypeScript</b>
+          </div>
+          <div class="note">
+            <b>Empty results?</b> A scan may find no new issues. Check your
+            watchlist and the scan history before running it again.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 ─────────────────────────────────────────────────────────────── -->
+  <section class="step">
+    <div class="step-num">03</div>
+    <div class="step-body">
+      <h2>Review what changed</h2>
+      <p>
+        The daily digest groups new issues, recent updates, and issues that
+        have closed or been claimed. Unchanged recommendations are left out.
+      </p>
+      <div class="split">
+        <div class="aside">
+          <p>
+            DanAgent checks for assignees, open pull requests that reference
+            the issue, and comments such as <em>“I’ll pick this up.”</em>
+          </p>
+          <p>
+            By default, a claim expires after 45 days without a pull request.
+            The issue can appear again with a stale-claim note. Ask in the
+            thread whether it’s still available before starting.
+          </p>
+          <p class="pullquote" style="margin-top:18px">
+            Check the latest discussion before you start; the issue may have
+            changed since the last scan.
+          </p>
+        </div>
+        <div class="mock">
+          <div class="mock-bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span>Example digest · Tue 08:00</span>
+          </div>
+          <div class="mock-pad">
+            <p class="digest-sec">New today</p>
+            <div class="ditem">
+              <span class="ditem-repo">rust-bitcoin</span>
+              <span class="ditem-txt">Document the `Weight` rounding rule in the fee-rate helpers</span>
+              <span class="tick tick-open">open</span>
+            </div>
+            <div class="ditem">
+              <span class="ditem-repo">lnbits/lnbits</span>
+              <span class="ditem-txt">Extension install fails silently when the manifest is unreachable</span>
+              <span class="tick tick-open">open</span>
+            </div>
+
+            <p class="digest-sec">Updated since last digest</p>
+            <div class="ditem">
+              <span class="ditem-repo">payjoin/rust-payjoin</span>
+              <span class="ditem-txt">Maintainer replied 4h ago: "happy to review a PR that keeps the v1 path intact"</span>
+              <span class="tick tick-open">open</span>
+            </div>
+
+            <p class="digest-sec">Closed or claimed since last digest</p>
+            <div class="ditem">
+              <span class="ditem-repo">mempool/mempool</span>
+              <span class="ditem-txt">An open pull request already covers this issue</span>
+              <span class="tick tick-taken">taken</span>
+            </div>
+            <div class="ditem">
+              <span class="ditem-repo">bitcoindevkit/bdk</span>
+              <span class="ditem-txt">Claimed 61 days ago, no PR followed — offered again, ask before starting</span>
+              <span class="tick tick-stale">stale</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 ─── the thesis ──────────────────────────────────────────────── -->
+  <section class="step">
+    <div class="step-num">04</div>
+    <div class="step-body">
+      <h2>Read the issue analysis</h2>
+      <p style="max-width:66ch">
+        Click <b>Analyze issue</b> to review the discussion, linked pull
+        requests, contribution guide, and referenced source files. The result
+        includes the issue’s status, suggested changes, and a plan.
+      </p>
+      <div class="thesis">
+        <p class="kicker" style="margin-bottom:6px">State</p>
+        <h3 class="ui" style="margin:0;font-size:1.15rem;font-weight:600">Is the issue available?</h3>
+        <div class="states">
+          <div class="state s-open">
+            <div class="state-name">available <span class="state-verdict">start</span></div>
+            <p>No assignee, open pull request, or recent claim was found.</p>
+          </div>
+          <div class="state s-taken">
+            <div class="state-name">claimed <span class="state-verdict">stop</span></div>
+            <p>Someone recently said they are working on it. Check with them.</p>
+          </div>
+          <div class="state s-taken">
+            <div class="state-name">has_open_pr <span class="state-verdict">stop</span></div>
+            <p>A pull request references this issue. Check what it covers.</p>
+          </div>
+          <div class="state s-taken">
+            <div class="state-name">likely_done <span class="state-verdict">stop</span></div>
+            <p>A merged pull request may have resolved the issue.</p>
+          </div>
+          <div class="state s-stale">
+            <div class="state-name">stale <span class="state-verdict">ask</span></div>
+            <p>An older claim has no linked pull request. Ask whether it’s available.</p>
+          </div>
+          <div class="state s-stale">
+            <div class="state-name">needs_design <span class="state-verdict">ask</span></div>
+            <p>The approach is still under discussion. Ask what needs deciding.</p>
+          </div>
+          <div class="state s-stale">
+            <div class="state-name">needs_clarification <span class="state-verdict">ask</span></div>
+            <p>The requirements need clarification. Ask in the issue thread.</p>
+          </div>
+          <div class="state s-none">
+            <div class="state-name">blocked <span class="state-verdict">wait</span></div>
+            <p>Progress depends on other work. Check the dependency.</p>
+          </div>
+        </div>
+      </div>
+      <div class="split" style="margin-top:26px">
+        <div class="aside">
+          <p>
+            The analysis includes quotes from the discussion, files to
+            investigate, suggested steps, test commands, and open questions.
+            Review these alongside the original issue.
+          </p>
+        </div>
+        <div class="aside">
+          <p>
+            A checkmark beside a file means its path was verified in the
+            repository. Other paths are suggestions from the model. Review
+            the analysis before saving the plan or writing code.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 ─────────────────────────────────────────────────────────────── -->
+  <section class="step">
+    <div class="step-num">05</div>
+    <div class="step-body">
+      <h2>Use Telegram</h2>
+      <p>
+        Use <code>/projects</code>, <code>/areas</code>, and <code>/issues</code>
+        to browse from Telegram. Try the example commands below.
+      </p>
+      <div class="split">
+        <div class="aside">
+          <p>
+            <code>/issues</code> shows results from the last completed scan.
+            It doesn’t start a new scan.
+          </p>
+          <p>
+            Subscribe to receive the daily digest. Use
+            <code>/analyze &lt;issue url&gt;</code> to request an analysis and
+            <code>/pr</code> to link your pull request for tracking.
+          </p>
+          <p class="pullquote" style="margin-top:18px">
+            This is an interactive example. It doesn’t send messages to Telegram.
+          </p>
+        </div>
+        <div class="mock">
+          <div class="mock-bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span>Telegram · example conversation</span>
+          </div>
+          <div class="tg" id="tg"></div>
+          <div class="tg-keys" id="keys"></div>
+          <p class="tg-hint" id="hint">Tap a command.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 ─────────────────────────────────────────────────────────────── -->
+  <section class="step">
+    <div class="step-num">06</div>
+    <div class="step-body">
+      <h2>Keep track of your pull request</h2>
+      <p>
+        Select <b>I’ll take it</b> in Telegram, or set an issue to
+        <b>In progress</b> on the dashboard. Link your pull request once it’s open.
+      </p>
+      <div class="split">
+        <div class="aside">
+          <p>
+            Scans check linked pull requests for reviews, test failures,
+            conflicts, and merges. The digest’s <b>Your work</b> section lists
+            items that need your attention first.
+          </p>
+          <p>
+            A merged pull request marks the issue as done. Taking, finishing,
+            or dismissing issues also helps rank future suggestions. When
+            you dismiss an issue in Telegram, you can give a reason.
+          </p>
+        </div>
+        <div>
+          <div class="term">
+<span class="c"># claim it, from the digest message</span>
+<span class="p">›</span> <b>[ I'll take it ]</b>   <span class="c">→ In Progress, owner: you</span>
+
+<span class="c"># link the PR once it is open</span>
+<span class="p">$</span> /pr <b>&lt;issue url&gt; &lt;pr url&gt;</b>
+<span class="p">›</span> Linked. I will track it for reviews, CI, and merge.
+
+<span class="c"># set GITHUB_LOGINS and this happens by itself</span>
+<span class="p">$</span> GITHUB_LOGINS=<b>your-handle</b>
+          </div>
+          <div class="note" style="border-left-color:var(--st-open);background:var(--st-open-wash)">
+            <b>Automatic tracking.</b> If you host DanAgent yourself, set
+            <code>GITHUB_LOGINS</code> to link your pull requests to tracked
+            issues automatically.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="closing">
+    <h2>Ready to start?</h2>
+    <p>
+      <a href="/">Open your queue</a>, add a project to your watchlist, and
+      run a scan. You can keep your plan, work notes, and pull request link
+      together on the selected issue.
+    </p>
+  </section>
+
+</div>
+
+<script>
+const DATA = {"areas":[{"area":"core","label":"Consensus & node","blurb":"The base layer: validation, policy, P2P, and the reference implementation.","projectCount":6},{"area":"lightning","label":"Lightning","blurb":"Payment channels, routing, and the node implementations that run them.","projectCount":9},{"area":"wallet","label":"Wallets & keys","blurb":"Where users hold coins: desktop, mobile, and hardware signing.","projectCount":5},{"area":"library","label":"Libraries & primitives","blurb":"The cryptography and protocol libraries everything else is built on.","projectCount":4},{"area":"privacy","label":"Privacy","blurb":"Coinjoin, payjoin, and reducing what the chain reveals about users.","projectCount":2},{"area":"payments","label":"Payments & merchant","blurb":"Accepting bitcoin: checkout, invoicing, and self-hosted processing.","projectCount":2},{"area":"ecash","label":"Ecash & L2","blurb":"Federated custody, ecash mints, sidechains, and newer layers.","projectCount":6},{"area":"mining","label":"Mining","blurb":"Pool protocols and the software that connects hashrate to the network.","projectCount":1},{"area":"infra","label":"Infrastructure & explorers","blurb":"Indexers, explorers, and the node-running tooling the ecosystem depends on.","projectCount":4},{"area":"design","label":"Design & UX","blurb":"Interface patterns and design systems for bitcoin products.","projectCount":1},{"area":"education","label":"Education & docs","blurb":"Books, guides, and protocol documentation.","projectCount":2}],"projects":[{"repo":"bitcoin/bitcoin","area":"core","language":"C++","level":"deep","blurb":"Bitcoin Core \u2014 the reference full node implementation."},{"repo":"bitcoin/bips","area":"core","language":"Wikitext","level":"intermediate","blurb":"Bitcoin Improvement Proposals \u2014 the protocol standards process."},{"repo":"bitcoin-core/gui","area":"core","language":"C++","level":"intermediate","blurb":"The Bitcoin Core Qt GUI, developed in its own repo."},{"repo":"btcsuite/btcd","area":"core","language":"Go","level":"intermediate","blurb":"A full node written in Go, widely used as a library."},{"repo":"libbitcoin/libbitcoin-system","area":"core","language":"C++","level":"deep","blurb":"An independent C++ implementation of the Bitcoin protocol."},{"repo":"bitcoin-dev-project/warnet","area":"core","language":"Python","level":"intermediate","blurb":"Spin up and attack simulated Bitcoin networks for testing."},{"repo":"lightningnetwork/lnd","area":"lightning","language":"Go","level":"intermediate","blurb":"LND, a Lightning node implementation in Go."},{"repo":"ElementsProject/lightning","area":"lightning","language":"C","level":"deep","blurb":"Core Lightning (CLN) \u2014 a modular, plugin-driven LN implementation."},{"repo":"ACINQ/eclair","area":"lightning","language":"Scala","level":"deep","blurb":"Eclair \u2014 the Lightning implementation behind Phoenix wallet."},{"repo":"lightningdevkit/rust-lightning","area":"lightning","language":"Rust","level":"intermediate","blurb":"LDK \u2014 Lightning as a library you embed in your own app."},{"repo":"lightning/bolts","area":"lightning","language":"Markdown","level":"intermediate","blurb":"The BOLT specs that define how Lightning nodes interoperate."},{"repo":"lnbits/lnbits","area":"lightning","language":"Python","level":"newcomer","blurb":"An extensible Lightning accounts system with a plugin ecosystem."},{"repo":"getAlby/lightning-browser-extension","area":"lightning","language":"TypeScript","level":"newcomer","blurb":"Alby \u2014 Lightning payments in the browser via WebLN."},{"repo":"ZeusLN/zeus","area":"lightning","language":"TypeScript","level":"newcomer","blurb":"A mobile app for managing a remote Lightning node."},{"repo":"bitcoin-dev-project/sim-ln","area":"lightning","language":"Rust","level":"intermediate","blurb":"Generate realistic payment traffic across Lightning testnets."},{"repo":"spesmilo/electrum","area":"wallet","language":"Python","level":"newcomer","blurb":"Electrum \u2014 a long-running lightweight desktop wallet."},{"repo":"sparrowwallet/sparrow","area":"wallet","language":"Java","level":"intermediate","blurb":"Sparrow \u2014 a desktop wallet aimed at power users and coin control."},{"repo":"BlueWallet/BlueWallet","area":"wallet","language":"TypeScript","level":"newcomer","blurb":"A React Native bitcoin and Lightning wallet for iOS and Android."},{"repo":"bitcoin-core/HWI","area":"wallet","language":"Python","level":"intermediate","blurb":"A Python interface for supported hardware wallets."},{"repo":"bitcoindevkit/bdk","area":"wallet","language":"Rust","level":"intermediate","blurb":"BDK, a toolkit for building Bitcoin wallets in Rust."},{"repo":"bitcoin-core/secp256k1","area":"library","language":"C","level":"deep","blurb":"The optimised ECDSA and Schnorr library Bitcoin Core signs with."},{"repo":"rust-bitcoin/rust-bitcoin","area":"library","language":"Rust","level":"intermediate","blurb":"Bitcoin data structures and consensus primitives in Rust."},{"repo":"rust-bitcoin/rust-miniscript","area":"library","language":"Rust","level":"deep","blurb":"Miniscript \u2014 analysable, composable Bitcoin spending policies."},{"repo":"bitcoinjs/bitcoinjs-lib","area":"library","language":"JavaScript","level":"newcomer","blurb":"A JavaScript library for Bitcoin transactions and keys."},{"repo":"payjoin/rust-payjoin","area":"privacy","language":"Rust","level":"intermediate","blurb":"Payjoin (BIP 78/77) in Rust \u2014 breaks the common-input heuristic."},{"repo":"WalletWasabi/WalletWasabi","area":"privacy","language":"C#","level":"intermediate","blurb":"Wasabi \u2014 a desktop wallet built around coinjoin."},{"repo":"btcpayserver/btcpayserver","area":"payments","language":"C#","level":"newcomer","blurb":"BTCPay Server \u2014 self-hosted, no-fee payment processing."},{"repo":"BoltzExchange/boltz-backend","area":"payments","language":"TypeScript","level":"intermediate","blurb":"Boltz \u2014 non-custodial swaps between on-chain and Lightning."},{"repo":"fedimint/fedimint","area":"ecash","language":"Rust","level":"intermediate","blurb":"Federated custody plus a Chaumian ecash mint."},{"repo":"cashubtc/nutshell","area":"ecash","language":"Python","level":"newcomer","blurb":"The reference Cashu ecash mint and wallet."},{"repo":"cashubtc/cdk","area":"ecash","language":"Rust","level":"intermediate","blurb":"Cashu Development Kit \u2014 build ecash mints and wallets in Rust."},{"repo":"ElementsProject/elements","area":"ecash","language":"C++","level":"deep","blurb":"Elements \u2014 the sidechain codebase Liquid runs on."},{"repo":"arkade-os/arkd","area":"ecash","language":"Go","level":"intermediate","blurb":"Ark \u2014 a newer off-chain scaling protocol, still early."},{"repo":"bisq-network/bisq","area":"ecash","language":"Java","level":"intermediate","blurb":"Bisq \u2014 a peer-to-peer exchange with no central custodian."},{"repo":"stratum-mining/stratum","area":"mining","language":"Rust","level":"deep","blurb":"Stratum V2 \u2014 the protocol giving hashrate control over templates."},{"repo":"mempool/mempool","area":"infra","language":"TypeScript","level":"newcomer","blurb":"The mempool.space block explorer and fee estimator."},{"repo":"romanz/electrs","area":"infra","language":"Rust","level":"intermediate","blurb":"An efficient Electrum server you can run over your own node."},{"repo":"Blockstream/esplora","area":"infra","language":"JavaScript","level":"newcomer","blurb":"The block explorer front end behind blockstream.info."},{"repo":"getumbrel/umbrel","area":"infra","language":"TypeScript","level":"newcomer","blurb":"A personal server OS with Bitcoin node apps."},{"repo":"BitcoinDesign/Guide","area":"design","language":"SCSS","level":"newcomer","blurb":"The Bitcoin Design Guide \u2014 patterns for wallets and bitcoin UX."},{"repo":"bitcoinbook/bitcoinbook","area":"education","language":"HTML","level":"newcomer","blurb":"Mastering Bitcoin \u2014 the book, open for corrections and updates."},{"repo":"bitcoin-dev-project/decoding-bitcoin","area":"education","language":"JavaScript","level":"newcomer","blurb":"Decoding Bitcoin \u2014 interactive lessons on how the protocol works."}]};
+
+const LEVEL_ORDER = { newcomer: 0, intermediate: 1, deep: 2 };
+let activeArea = '';
+
+const chipsEl = document.getElementById('chips');
+const gridEl = document.getElementById('grid');
+
+function renderChips() {
+  const all = [{ area: '', label: 'All areas', projectCount: DATA.projects.length }]
+    .concat(DATA.areas.filter(a => a.projectCount > 0));
+
+  chipsEl.replaceChildren(...all.map(area => {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(activeArea === area.area));
+    if (area.blurb) b.title = area.blurb;
+    b.append(area.label);
+    const n = document.createElement('b');
+    n.textContent = area.projectCount;
+    b.append(n);
+    b.addEventListener('click', () => {
+      activeArea = area.area;
+      renderChips();
+      renderGrid();
+    });
+    return b;
+  }));
+}
+
+function renderGrid() {
+  const visible = (activeArea
+    ? DATA.projects.filter(p => p.area === activeArea)
+    : DATA.projects.slice()
+  ).sort((a, b) => (LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level]) || a.repo.localeCompare(b.repo));
+
+  if (!visible.length) {
+    gridEl.innerHTML = '<div class="grid-empty">No projects in this area.</div>';
+    return;
+  }
+
+  gridEl.replaceChildren(...visible.map(p => {
+    const card = document.createElement('article');
+    card.className = 'proj';
+
+    const top = document.createElement('div');
+    top.className = 'proj-top';
+
+    const link = document.createElement('a');
+    link.href = 'https://github.com/' + p.repo;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.textContent = p.repo;
+
+    const lvl = document.createElement('span');
+    lvl.className = 'lvl lvl-' + p.level;
+    lvl.textContent = p.level;
+
+    top.append(link, lvl);
+
+    const blurb = document.createElement('p');
+    blurb.textContent = p.blurb;
+
+    const lang = document.createElement('span');
+    lang.className = 'lang';
+    lang.textContent = p.language;
+
+    card.append(top, blurb, lang);
+    return card;
+  }));
+}
+
+/* ── Telegram ───────────────────────────────────────────────────────── */
+
+const tgEl = document.getElementById('tg');
+const keysEl = document.getElementById('keys');
+const hintEl = document.getElementById('hint');
+
+function areaLine(a) {
+  return '<b>' + a.label + '</b> — ' + a.projectCount +
+    ' project' + (a.projectCount === 1 ? '' : 's') +
+    '\n<code>/projects ' + a.area + '</code>';
+}
+
+const REPLIES = {
+  '/projects': () =>
+    '<b>Bitcoin projects I watch</b> (' + DATA.projects.length + ' total)\n\n' +
+    DATA.areas.filter(a => a.projectCount).map(areaLine).join('\n\n') +
+    '\n\nSend <code>/issues</code> for what is open right now.',
+
+  '/projects lightning': () => {
+    const rows = DATA.projects.filter(p => p.area === 'lightning').map(p =>
+      '<a href="https://github.com/' + p.repo + '" target="_blank" rel="noreferrer">' + p.repo + '</a>' +
+      ' · ' + p.language + ' · ' + p.level + '\n' + p.blurb);
+    return '<b>Lightning</b>\n\n' + rows.join('\n\n') +
+      '\n\nAdd any of these to your watchlist on the dashboard, or send ' +
+      '<code>/analyze &lt;issue url&gt;</code> for a deep read of one issue.';
+  },
+
+  '/areas': () =>
+    '<b>Areas of the Bitcoin ecosystem</b>\n\n' +
+    DATA.areas.map(a =>
+      '<b>' + a.label + '</b> (<code>' + a.area + '</code>) — ' + a.projectCount +
+      '\n' + a.blurb).join('\n\n') +
+    '\n\nUse <code>/projects &lt;area&gt;</code> to list the repos in one.',
+
+  '/issues privacy': () =>
+    '<b>Open in Privacy</b>\n\n' +
+    '<a href="#">Support receiver-side output substitution behind a flag</a>\n' +
+    '<code>payjoin/rust-payjoin</code> · medium · Privacy\n\n' +
+    '<a href="#">Coinjoin round fails to resume after a client restart</a>\n' +
+    '<code>WalletWasabi/WalletWasabi</code> · medium · Privacy\n\n' +
+    'Send <code>/analyze &lt;issue url&gt;</code> and I will read the thread, ' +
+    'linked PRs, and source before you start.',
+};
+
+const COMMANDS = ['/projects', '/projects lightning', '/areas', '/issues privacy'];
+const used = new Set();
+
+function bubble(text, mine) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + (mine ? 'msg-you' : 'msg-bot');
+  if (mine) el.textContent = text;
+  else el.innerHTML = text;
+  tgEl.append(el);
+  tgEl.scrollTop = tgEl.scrollHeight;
+}
+
+function send(cmd) {
+  bubble(cmd, true);
+  bubble(REPLIES[cmd](), false);
+  used.add(cmd);
+  renderKeys();
+  hintEl.textContent = used.size === COMMANDS.length
+    ? 'You’ve tried all the example commands.'
+    : 'Choose another example command.';
+}
+
+function renderKeys() {
+  keysEl.replaceChildren(...COMMANDS.map(cmd => {
+    const b = document.createElement('button');
+    b.className = 'key';
+    b.type = 'button';
+    b.textContent = cmd;
+    b.disabled = used.has(cmd);
+    b.addEventListener('click', () => send(cmd));
+    return b;
+  }));
+}
+
+renderChips();
+renderGrid();
+renderKeys();
+/* Open on a real exchange rather than an empty thread. */
+send('/projects');
+
+/* The embedded catalogue is a snapshot taken at build time. When this page is
+   served from the dashboard itself, prefer the live endpoint so the two can
+   never drift; when it is opened as a standalone file the fetch just fails and
+   the snapshot stands. */
+fetch('/api/bitcoin-projects')
+  .then(res => (res.ok ? res.json() : null))
+  .then(live => {
+    if (!live || !Array.isArray(live.projects) || !live.projects.length) return;
+    DATA.projects = live.projects;
+    DATA.areas = live.areas;
+    document.getElementById('guide-project-count').textContent = DATA.projects.length;
+    document.getElementById('guide-area-count').textContent = DATA.areas.filter(a => a.projectCount).length;
+    renderChips();
+    renderGrid();
+  })
+  .catch(() => { /* standalone file — the snapshot is correct enough */ });
+</script>
+
+</body>
+</html>

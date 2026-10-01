@@ -1,6 +1,7 @@
 'use strict';
 const config = require('./config');
 const { buildIssueInsight, buildRepoOverview, detectClaim, stripMarkdown } = require('./repo-insights');
+const { classifyRepo } = require('./bitcoin-ecosystem');
 
 const DAYS_BACK = 30; // general recent activity window
 let authDisabledForRun = false;
@@ -511,6 +512,9 @@ function shape(issue, comments = [], linkedPRs = [], claim = null) {
     sourceUrl: issue.sourceUrl || '',
     sourcePublishedAt: issue.sourcePublishedAt || '',
     repositoryLanguage: issue.repositoryLanguage || '',
+    bitcoinArea: issue.bitcoinArea || '',
+    bitcoinAreaLabel: issue.bitcoinAreaLabel || '',
+    bitcoinAreaSource: issue.bitcoinAreaSource || '',
   };
 }
 
@@ -575,10 +579,16 @@ async function scanRepo(repo, options = {}) {
   const preferredLanguages = getPreferredLanguages();
   const languagePreferred = !preferredLanguages.length
     || preferredLanguages.includes(String(repositoryLanguage).toLowerCase());
+  // Which part of the Bitcoin ecosystem this repo sits in. Ranking uses it to
+  // favour the areas the contributor said they care about.
+  const bitcoinArea = classifyRepo(repo);
   const decorateIssue = issue => ({
     ...issue,
     repositoryLanguage,
     languagePreferred,
+    bitcoinArea: bitcoinArea.area,
+    bitcoinAreaLabel: bitcoinArea.label,
+    bitcoinAreaSource: bitcoinArea.source,
   });
 
   const sourceIssues = mode === 'all-open'

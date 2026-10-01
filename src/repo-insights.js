@@ -1,4 +1,5 @@
 'use strict';
+const { preferredAreas } = require('./bitcoin-ecosystem');
 
 function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -64,26 +65,26 @@ function inferExpectation(issue, comments) {
   const cleaned = stripMarkdown(text);
 
   if (labels.has('bug')) {
-    return 'Reproduce the bug, isolate the root cause, add or update a failing test if possible, then ship the smallest safe fix.';
+    return 'Reproduce the bug and identify the cause. Add a regression test where possible, then fix the affected code.';
   }
 
   if (labels.has('documentation') || labels.has('docs') || /\bdocs?\b|dashboard/i.test(cleaned)) {
-    return 'Clarify the current behavior in docs, add concrete examples or screenshots where useful, and make the explanation easy for a first-time user to follow.';
+    return 'Update the docs to explain the behavior. Add an example or screenshot if it helps.';
   }
 
   if (/alert|anomaly|monitor|metric|grafana|prometheus/i.test(cleaned)) {
-    return 'Add the missing metric or alert logic, define what signal should be emitted, and make it observable through existing dashboards or tests.';
+    return 'Define the metric or alert the issue asks for. Add it to the existing monitoring code and check the output.';
   }
 
   if (/sequence diagram|visuali[sz]e|dashboard|description/i.test(cleaned)) {
-    return 'Turn the raw data into something understandable: define the expected output, produce a first usable view, and document how a user should interpret it.';
+    return 'Confirm what the view should show, implement it, and explain how to read it.';
   }
 
   if (labels.has('enhancement') || labels.has('help wanted') || labels.has('good first issue')) {
-    return 'Implement a scoped improvement that matches the issue description, keep the change narrow, and include validation steps so maintainers can review it quickly.';
+    return 'Confirm the requested behavior, make the change, and include steps to test it.';
   }
 
-  return 'Read the issue carefully, confirm the intended outcome from the discussion, then implement the smallest complete change that resolves the request.';
+  return 'Check the issue and discussion for requirements. Ask about anything unclear before starting.';
 }
 
 function inferQuickPlan(issue, comments) {
@@ -92,17 +93,17 @@ function inferQuickPlan(issue, comments) {
   const labels = new Set((issue.labels || []).map(label => String(label).toLowerCase()));
 
   const steps = [
-    `Read the issue and related files, then restate the target outcome: ${firstSignal}`,
+    `Check the issue and related files for this requirement: ${firstSignal}`,
   ];
 
   if (labels.has('bug')) {
     steps.push('Reproduce the failure locally or with a focused test so you can verify the fix.');
   } else {
-    steps.push('Locate the existing code path or docs section that owns this behavior and map the smallest change surface.');
+    steps.push('Find the code or docs that describe this behavior.');
   }
 
-  steps.push('Implement the first narrow version, then compare it against the issue description and comment thread.');
-  steps.push('Run the relevant project checks, update docs/tests if needed, and open a PR that explains the before/after behavior.');
+  steps.push('Make the change and check it against the requirements in the discussion.');
+  steps.push('Run the project checks. Include any needed tests or docs, and explain the change in your pull request.');
 
   return steps.slice(0, 4);
 }
@@ -244,6 +245,46 @@ function detectClaim(issue, comments = [], linkedPRs = [], options = {}) {
   return { claimed: false, reason: '', by: '', prUrl: '' };
 }
 
+// Rank by where the repo sits in the Bitcoin ecosystem.
+//
+// With BITCOIN_FOCUS_AREAS set (e.g. `lightning,privacy`) a contributor stops
+// being shown consensus C++ when what they wanted was Lightning. With it
+// unset, being a known Bitcoin project is still a mild positive — that is the
+// whole point of this tool.
+//
+// An area we only *guessed* from the repo name gets half the weight of one we
+// know from the catalogue, so a repo called "lightning-dashboard" that has
+// nothing to do with Bitcoin cannot dominate the queue.
+function scoreBitcoinArea(issue, reasons) {
+  const area = issue.bitcoinArea || '';
+  if (!area) return 0;
+
+  const certain = issue.bitcoinAreaSource === 'catalog';
+  const label = issue.bitcoinAreaLabel || area;
+  const focus = preferredAreas();
+
+  if (!focus.length) {
+    const points = certain ? 6 : 3;
+    if (certain) reasons.push(`${label} is a known Bitcoin ecosystem project`);
+    return points;
+  }
+
+  // Only three reasons are shown, so when the contributor has stated a focus
+  // the area is one of the first things they need to see — unshift, don't
+  // push. Claim and merged-PR reasons unshift later and still land ahead of
+  // this, which is the right order.
+  if (focus.includes(area)) {
+    const points = certain ? 14 : 7;
+    reasons.unshift(`${label} matches your focus areas`);
+    return points;
+  }
+
+  // Outside the stated focus. Penalise, but never hard enough to bury a
+  // genuinely great issue — the contributor may still want to see it.
+  reasons.unshift(`${label} sits outside your focus areas`);
+  return certain ? -6 : -3;
+}
+
 function buildIssueFitScore(issue, comments = []) {
   const labels = new Set((issue.labels || []).map(label => String(label).toLowerCase()));
   const text = stripMarkdown(`${issue.title}\n${issue.body}\n${comments.map(comment => comment.body).join('\n')}`);
@@ -321,6 +362,8 @@ function buildIssueFitScore(issue, comments = []) {
     score += 12;
     reasons.push('BitcoinDevs curated this as an open-source contribution candidate');
   }
+
+  score += scoreBitcoinArea(issue, reasons);
 
   if (issue.languagePreferred === false) {
     score -= 10;

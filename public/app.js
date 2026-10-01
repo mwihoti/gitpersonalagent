@@ -7,6 +7,7 @@ const state = {
   currentPage: 1,
   pageSize: 20,
   apiKey: window.sessionStorage.getItem('danagent.apiKey') || '',
+  ecosystem: { areas: [], projects: [], activeArea: '' },
 };
 
 const els = {
@@ -53,7 +54,6 @@ const els = {
   paginationSummary: document.getElementById('pagination-summary'),
   prevPageButton: document.getElementById('prev-page-button'),
   nextPageButton: document.getElementById('next-page-button'),
-  seeMoreButton: document.getElementById('see-more-button'),
   repoForm: document.getElementById('repo-form'),
   repoInput: document.getElementById('repo-input'),
   repoStatus: document.getElementById('repo-status'),
@@ -65,11 +65,116 @@ const els = {
   repoResultsName: document.getElementById('repo-results-name'),
   repoResultsCount: document.getElementById('repo-results-count'),
   repoIssuesList: document.getElementById('repo-issues-list'),
+  ecosystemStatus: document.getElementById('ecosystem-status'),
+  ecosystemAreas: document.getElementById('ecosystem-areas'),
+  ecosystemProjects: document.getElementById('ecosystem-projects'),
 };
+
+// ── Bitcoin ecosystem starter ───────────────────────────────────────────
+//
+// The first thing a new contributor sees. /api/bitcoin-projects is static and
+// unauthenticated, so this panel fills in even before a dashboard key is
+// entered — someone can browse the ecosystem without credentials.
+
+function renderEcosystemAreas() {
+  const areas = state.ecosystem.areas.filter(area => area.projectCount > 0);
+  els.ecosystemAreas.innerHTML = [
+    { area: '', label: 'All areas', projectCount: state.ecosystem.projects.length },
+    ...areas,
+  ].map(area => `
+    <button type="button" class="ecosystem-chip${state.ecosystem.activeArea === area.area ? ' is-active' : ''}"
+            data-area="${escapeHtml(area.area)}" aria-pressed="${state.ecosystem.activeArea === area.area}" title="${escapeHtml(area.blurb || '')}">
+      ${escapeHtml(area.label)}<span>${area.projectCount}</span>
+    </button>
+  `).join('');
+
+  els.ecosystemAreas.querySelectorAll('.ecosystem-chip').forEach(node => {
+    node.addEventListener('click', () => {
+      state.ecosystem.activeArea = node.dataset.area;
+      renderEcosystemAreas();
+      renderEcosystemProjects();
+    });
+  });
+}
+
+function renderEcosystemProjects() {
+  const { activeArea, projects } = state.ecosystem;
+  const watched = new Set(state.repositories.map(item => String(item.repo).toLowerCase()));
+  const visible = activeArea
+    ? projects.filter(project => project.area === activeArea)
+    : projects;
+
+  if (!visible.length) {
+    els.ecosystemProjects.innerHTML = '<div class="detail-empty">No projects in this area yet.</div>';
+    return;
+  }
+
+  els.ecosystemProjects.innerHTML = visible.map(project => {
+    const isWatched = watched.has(project.repo.toLowerCase());
+    return `
+      <article class="ecosystem-card">
+        <div class="ecosystem-card-head">
+          <a href="https://github.com/${escapeHtml(project.repo)}" target="_blank" rel="noreferrer">${escapeHtml(project.repo)}</a>
+          <span class="ecosystem-level level-${escapeHtml(project.level)}">${escapeHtml({ newcomer: 'Newcomer friendly', intermediate: 'Some experience', deep: 'Protocol experience' }[project.level] || project.level)}</span>
+        </div>
+        <p>${escapeHtml(project.blurb)}</p>
+        <div class="ecosystem-card-foot">
+          <span class="ecosystem-lang">${escapeHtml(project.language)}</span>
+          <button type="button" class="button button-secondary ecosystem-add"
+                  data-repo="${escapeHtml(project.repo)}" ${isWatched ? 'disabled' : ''}>
+            ${isWatched ? 'Watching' : 'Add to watchlist'}
+          </button>
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  els.ecosystemProjects.querySelectorAll('.ecosystem-add').forEach(node => {
+    node.addEventListener('click', () => {
+      addEcosystemProject(node).catch(error => {
+        els.ecosystemStatus.textContent = error.message;
+      });
+    });
+  });
+}
+
+async function addEcosystemProject(button) {
+  const repo = button.dataset.repo;
+  button.disabled = true;
+  button.textContent = 'Adding…';
+  els.ecosystemStatus.textContent = `Adding ${repo}…`;
+  try {
+    const res = await authorizedFetch('/api/repositories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo }),
+    });
+    if (!res.ok) throw new Error(await readErrorResponse(res));
+    await loadRepositories();
+    els.ecosystemStatus.textContent = `${repo} added to your watchlist.`;
+    renderEcosystemProjects();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Add to watchlist';
+    throw error;
+  }
+}
+
+async function loadBitcoinProjects() {
+  const res = await fetch('/api/bitcoin-projects');
+  if (!res.ok) throw new Error(await readErrorResponse(res));
+  const payload = await res.json();
+  state.ecosystem.areas = payload.areas || [];
+  state.ecosystem.projects = payload.projects || [];
+  els.ecosystemStatus.textContent = `${state.ecosystem.projects.length} projects across ${state.ecosystem.areas.filter(a => a.projectCount).length} areas`;
+  renderEcosystemAreas();
+  renderEcosystemProjects();
+}
 
 function renderRepositories() {
   if (!state.repositories.length) {
-    els.watchlistList.innerHTML = '<div class="detail-empty">No repositories added yet.</div>';
+    els.watchlistList.innerHTML = '<div class="detail-empty"><strong>No repositories yet</strong><p>Add a repository above or <a href="#projects">browse Bitcoin projects</a>. With an empty watchlist, scans use BitcoinDevs and the project directory.</p></div>';
+    syncEcosystemWatchState();
     return;
   }
 
@@ -85,6 +190,8 @@ function renderRepositories() {
       </div>
     </article>
   `).join('');
+
+  syncEcosystemWatchState();
 
   els.watchlistList.querySelectorAll('.watchlist-inspect').forEach(node => {
     node.addEventListener('click', () => {
@@ -103,6 +210,12 @@ function renderRepositories() {
   });
 }
 
+// Adding or removing a repo anywhere changes which ecosystem cards read
+// "Watching", so keep the starter panel in step.
+function syncEcosystemWatchState() {
+  if (state.ecosystem.projects.length) renderEcosystemProjects();
+}
+
 function normalizeText(value) {
   return String(value || '').toLowerCase();
 }
@@ -118,7 +231,8 @@ function getVisibleOpportunities() {
 
 function renderLearning(learning) {
   if (!learning || !learning.sampleSize) {
-    els.learningBadge.textContent = 'No signal yet';
+    els.learningBadge.textContent = 'No history yet';
+    els.learningSummary.textContent = 'The issues you take, finish, or dismiss help rank future suggestions. Dismissal reasons from Telegram count too.';
     els.learningTags.innerHTML = '';
     return;
   }
@@ -147,7 +261,7 @@ function renderStats() {
   els.metricProgress.textContent = String(inProgress);
   els.metricDone.textContent = String(done);
   els.metricHigh.textContent = String(high);
-  els.storageBadge.textContent = `Storage: ${state.storage}`;
+  els.storageBadge.textContent = state.storage === 'airtable' ? 'Saved to Airtable' : state.storage === 'local' ? 'Saved locally' : state.storage;
 }
 
 function renderHealth(payload) {
@@ -158,20 +272,20 @@ function renderHealth(payload) {
   const lastRun = recentRuns[0];
   if (!lastRun) {
     els.lastRunSummary.textContent = 'No scans recorded yet.';
-    els.recentRunsList.innerHTML = '<div class="detail-empty">Run a scan to start building history.</div>';
+    els.recentRunsList.innerHTML = '<div class="detail-empty">Your completed scans will appear here.</div>';
     return;
   }
 
   const duration = typeof lastRun.durationMs === 'number'
     ? `${Math.round(lastRun.durationMs / 100) / 10}s`
     : 'unknown duration';
-  els.lastRunSummary.textContent = `${lastRun.status} via ${lastRun.trigger} on ${new Date(lastRun.startedAt).toLocaleString()} • ${lastRun.opportunities || 0} opportunities • ${duration} • source ${lastRun.discoverySource || 'watchlist'}`;
+  els.lastRunSummary.textContent = `Last scan: ${new Date(lastRun.startedAt).toLocaleString()} · ${lastRun.opportunities || 0} issues found · ${duration}`;
 
   els.recentRunsList.innerHTML = recentRuns.map(run => `
     <article class="watchlist-item">
       <div>
-        <strong>${escapeHtml(String(run.status || 'unknown').toUpperCase())} • ${escapeHtml(run.trigger || 'unknown')}</strong>
-        <p>${escapeHtml(new Date(run.startedAt).toLocaleString())} • repos ${run.repositories || 0} • issues ${run.totalIssues || 0} • opportunities ${run.opportunities || 0} • deduped ${run.dedupedOpportunities || 0} • source ${escapeHtml(run.discoverySource || 'watchlist')}</p>
+        <strong>${escapeHtml(run.status || 'Unknown')} · ${escapeHtml(run.trigger || 'unknown')}</strong>
+        <p>${escapeHtml(new Date(run.startedAt).toLocaleString())} · ${run.repositories || 0} repositories · ${run.opportunities || 0} issues saved</p>
       </div>
       <div class="watchlist-actions">
         ${createTag(`${Math.round((run.durationMs || 0) / 100) / 10}s`)}
@@ -273,14 +387,17 @@ async function loadLiveState(item) {
 }
 
 function renderList() {
+  const focusedId = document.activeElement?.classList.contains('list-item')
+    ? document.activeElement.dataset.id : null;
+  els.list.setAttribute('aria-busy', 'false');
   if (!state.filtered.length) {
-    els.paginationSummary.textContent = 'Showing 0 of 0';
+    els.paginationSummary.textContent = '0 issues';
     els.prevPageButton.disabled = true;
     els.nextPageButton.disabled = true;
-    els.seeMoreButton.disabled = true;
-    els.list.innerHTML = state.repositories.length
-      ? '<div class="detail-empty">No opportunities match the current filters.</div>'
-      : '<div class="detail-empty">Run a scan to populate the workbench from BitcoinDevs or add repositories to the watchlist.</div>';
+    const hasFilters = els.statusFilter.value || els.priorityFilter.value || els.searchInput.value;
+    els.list.innerHTML = hasFilters
+      ? '<div class="detail-empty"><strong>No matching issues</strong><p>Try a different search or clear the status and priority filters.</p><button type="button" class="button button-secondary" data-clear-filters>Clear filters</button></div>'
+      : '<div class="detail-empty"><strong>Your queue is empty</strong><p>Run a scan to find open issues in your watchlist. If you haven’t added any projects, the scan checks BitcoinDevs and the project directory.</p><button type="button" class="button button-secondary" data-run-scan>Run your first scan</button><a class="text-link" href="#projects">Browse projects →</a></div>';
     showEmptyState();
     return;
   }
@@ -292,7 +409,6 @@ function renderList() {
   els.paginationSummary.textContent = `Showing ${start + 1}-${Math.min(end, state.filtered.length)} of ${state.filtered.length}`;
   els.prevPageButton.disabled = state.currentPage === 1;
   els.nextPageButton.disabled = state.currentPage >= totalPages;
-  els.seeMoreButton.disabled = state.currentPage >= totalPages;
 
   let lastDate = null;
   els.list.innerHTML = visibleItems.map(item => {
@@ -302,31 +418,28 @@ function renderList() {
     lastDate = item.date;
     return `
     ${dateHeader}
-    <article class="list-item ${item.id === state.selectedId ? 'active' : ''}" data-id="${item.id}">
-      <div class="list-item-header">
-        <h3>${escapeHtml(item.opportunity)}</h3>
-      </div>
-      <p>${escapeHtml(item.repo)}</p>
-      <div class="list-meta">
-        ${createTag(item.date || 'No date')}
-        ${createTag(item.status, `status-${statusClass(item.status)}`)}
-        ${createTag(item.priority, `priority-${statusClass(item.priority)}`)}
-        ${createTag(`Effort ${item.effort || 'medium'}`)}
-        ${item.impact ? createTag(`Impact ${escapeHtml(item.impact)}`) : ''}
-        ${isStale(item) ? createTag('Stale', 'tag-stale') : ''}
-        ${item.source ? createTag(`Source: ${escapeHtml(item.source)}`) : ''}
-        ${item.score ? createTag(`Score: ${escapeHtml(item.score)}`) : ''}
-      </div>
-      <div class="list-footer">
+    <button type="button" class="list-item ${item.id === state.selectedId ? 'active' : ''}" data-id="${escapeHtml(item.id)}" aria-pressed="${item.id === state.selectedId}">
+      <span class="list-item-header">
+        <span class="issue-title">${escapeHtml(item.opportunity)}</span>
+      </span>
+      <span class="list-repo">${escapeHtml(item.repo)}</span>
+      <span class="list-meta">
+        ${createTag(escapeHtml(item.status || 'New'), `status-${statusClass(item.status)}`)}
+        ${item.priority === 'High' ? createTag('High priority', 'priority-high') : ''}
+        ${createTag(`${escapeHtml(item.effort || 'medium')} effort`)}
+        ${isStale(item) ? createTag('Quiet for 14+ days', 'tag-stale') : ''}
+      </span>
+      <span class="list-footer">
         ${item.owner ? createTag(`Owner: ${escapeHtml(item.owner)}`) : ''}
         ${item.dueDate ? createTag(`Due: ${escapeHtml(item.dueDate)}`) : ''}
-      </div>
-    </article>
+      </span>
+    </button>
   `;
   }).join('');
 
   els.list.querySelectorAll('.list-item').forEach(node => {
-    node.addEventListener('click', () => selectOpportunity(node.dataset.id));
+    node.addEventListener('click', () => selectOpportunity(node.dataset.id, true));
+    if (node.dataset.id === focusedId) node.focus({ preventScroll: true });
   });
 }
 
@@ -335,7 +448,7 @@ function showEmptyState() {
   els.detailForm.classList.add('hidden');
 }
 
-function selectOpportunity(id) {
+function selectOpportunity(id, focusDetail = false) {
   state.selectedId = id;
   renderList();
 
@@ -354,7 +467,7 @@ function selectOpportunity(id) {
     item.score ? `Score ${item.score}` : '',
     item.issueUpdatedAt ? `Issue updated ${new Date(item.issueUpdatedAt).toLocaleString()}` : '',
   ].filter(Boolean).join(' • ');
-  els.detailTitle.textContent = item.opportunity || 'Untitled opportunity';
+  els.detailTitle.textContent = item.opportunity || 'Untitled issue';
   els.detailIssueLink.href = item.issueUrl || '#';
   els.detailIssueLink.style.visibility = item.issueUrl ? 'visible' : 'hidden';
   els.detailStatus.value = item.status || 'New';
@@ -365,11 +478,11 @@ function selectOpportunity(id) {
   els.detailPrUrl.value = item.prUrl || '';
   els.detailActivityLog.value = item.activityLog || '';
   els.detailQuickPlan.value = item.quickPlan || '';
-  els.detailQualifies.textContent = item.whyItQualifies || 'No qualification note yet.';
-  els.detailAction.textContent = item.suggestedAction || 'No suggested action yet.';
-  els.detailMatters.textContent = item.whyItMatters || 'No impact note yet.';
-  els.detailTip.textContent = item.clarityTip || 'No validation tip yet.';
-  els.detailCode.textContent = item.codeSkeleton || '// No code skeleton available yet.';
+  els.detailQualifies.textContent = item.whyItQualifies || 'No recommendation notes saved.';
+  els.detailAction.textContent = item.suggestedAction || 'No suggested change saved.';
+  els.detailMatters.textContent = item.whyItMatters || 'No impact notes saved.';
+  els.detailTip.textContent = item.clarityTip || 'No test instructions saved.';
+  els.detailCode.textContent = item.codeSkeleton || '// No suggested code saved.';
   renderDetailAnalysis(item.analysis || null);
   if (item.issueUrl) {
     loadLiveState(item).catch(error => {
@@ -385,6 +498,10 @@ function selectOpportunity(id) {
     item.lastUpdated ? `Last updated ${new Date(item.lastUpdated).toLocaleString()}` : '',
   ].filter(Boolean).join(' • ');
   els.saveStatus.textContent = summary;
+  if (focusDetail && window.matchMedia('(max-width: 840px)').matches) {
+    els.detailTitle.focus({ preventScroll: true });
+    els.detailForm.scrollIntoView({ block: 'start', behavior: 'instant' });
+  }
 }
 
 function escapeHtml(value) {
@@ -440,7 +557,7 @@ async function authorizedFetch(url, options = {}, retry = true) {
 }
 
 async function loadOpportunities() {
-  els.scanStatus.textContent = 'Loading opportunities';
+  els.scanStatus.textContent = 'Loading issues…';
   const res = await authorizedFetch('/api/opportunities');
   if (!res.ok) {
     throw new Error(await readErrorResponse(res));
@@ -566,7 +683,7 @@ function analysisHtml(result) {
     prs,
     sources,
     conversation,
-    a.codeSkeleton ? block('Grounded starter code', `<pre>${escapeHtml(a.codeSkeleton)}</pre>`) : '',
+    a.codeSkeleton ? block('Suggested code', `<pre>${escapeHtml(a.codeSkeleton)}</pre>`) : '',
   ].join('');
 }
 
@@ -617,7 +734,7 @@ async function analyzeSelectedOpportunity() {
     if (a.validation) {
       els.detailTip.textContent = a.validation;
     }
-    els.saveStatus.textContent = 'Analysis ready. Plan fields were pre-filled; save to keep them.';
+    els.saveStatus.textContent = 'Analysis ready. Review the suggested plan, then save your changes.';
     els.detailAnalyzeButton.textContent = 'Re-analyze issue';
   } finally {
     els.detailAnalyzeButton.disabled = false;
@@ -698,7 +815,7 @@ function renderRepoIssues(repo) {
         ${issue.claim && issue.claim.claimed ? createTag(`Claimed: ${escapeHtml(issue.claim.reason)}`, 'fit-low-fit') : ''}
         ${(issue.labels || []).slice(0, 4).map(label => createTag(escapeHtml(label))).join('')}
       </div>
-      <p class="save-status">Quick read from labels and thread keywords. Click Analyze for a grounded read of the thread, linked PRs, and source.</p>
+      <p class="save-status">This estimate uses labels and discussion keywords. Analyze the issue to check the full thread, linked pull requests, and source files.</p>
       <section class="repo-insight-block">
         <h5>Issue fit score</h5>
         <p>${escapeHtml(issue.issueFitReason || 'No fit rationale available yet.')}</p>
@@ -709,12 +826,12 @@ function renderRepoIssues(repo) {
           <p>${escapeHtml(issue.conversationSummary || 'No discussion summary available yet.')}</p>
         </section>
         <section class="repo-insight-block">
-          <h5>Likely expectation (heuristic)</h5>
+          <h5>Likely requirements</h5>
           <p>${escapeHtml(issue.expectationSummary || 'No expectation summary available yet.')}</p>
         </section>
       </div>
       <section class="repo-insight-block">
-        <h5>Generic plan (heuristic)</h5>
+        <h5>Suggested starting steps</h5>
         <ol class="repo-plan-list">
           ${(issue.quickPlan || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}
         </ol>
@@ -790,6 +907,7 @@ async function checkRepoIssues(event) {
 }
 
 async function inspectRepository(repo) {
+  document.getElementById('repo-check').open = true;
   els.repoInput.value = repo;
   await checkRepoIssues();
 }
@@ -814,7 +932,7 @@ async function addRepositoryToWatchlist(event) {
   }
 
   els.watchlistInput.value = '';
-  els.watchlistStatus.textContent = `${data.repository.repo} added to the scheduled watchlist`;
+  els.watchlistStatus.textContent = `${data.repository.repo} added to your watchlist.`;
   await loadRepositories();
   await inspectRepository(data.repository.repo);
 }
@@ -828,7 +946,7 @@ async function removeRepository(id) {
   if (!res.ok) {
     throw new Error(data.error || 'Failed to remove repository');
   }
-  els.watchlistStatus.textContent = 'Repository removed from the scheduled watchlist';
+  els.watchlistStatus.textContent = 'Repository removed from your watchlist.';
   await loadRepositories();
 }
 
@@ -878,9 +996,9 @@ async function triggerScan() {
     if (!res.ok) {
       throw new Error(data.error || 'Scan failed');
     }
-    els.scanStatus.textContent = `${data.reused ? 'Scan reused' : 'Scan completed'}: ${data.digest?.contest_digest?.length || 0} opportunities`;
     await loadOpportunities();
     await loadHealth();
+    els.scanStatus.textContent = `${data.reused ? 'Existing scan loaded' : 'Scan complete'} · ${data.digest?.contest_digest?.length || 0} issues found`;
   } catch (error) {
     els.scanStatus.textContent = error.message;
   } finally {
@@ -889,8 +1007,9 @@ async function triggerScan() {
 }
 
 function wireEvents() {
-  els.statusFilter.addEventListener('change', applyFilters);
-  els.priorityFilter.addEventListener('change', applyFilters);
+  const filterChanged = () => { state.currentPage = 1; applyFilters(); };
+  els.statusFilter.addEventListener('change', filterChanged);
+  els.priorityFilter.addEventListener('change', filterChanged);
   els.searchInput.addEventListener('input', () => {
     state.currentPage = 1;
     applyFilters();
@@ -908,12 +1027,14 @@ function wireEvents() {
       renderList();
     }
   });
-  els.seeMoreButton.addEventListener('click', () => {
-    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
-    if (state.currentPage < totalPages) {
-      state.currentPage += 1;
-      renderList();
+  els.list.addEventListener('click', event => {
+    if (event.target.closest('[data-clear-filters]')) {
+      els.statusFilter.value = '';
+      els.priorityFilter.value = '';
+      els.searchInput.value = '';
+      filterChanged();
     }
+    if (event.target.closest('[data-run-scan]')) els.runScanButton.click();
   });
   els.detailForm.addEventListener('submit', event => {
     saveCurrentOpportunity(event).catch(error => {
@@ -954,8 +1075,13 @@ loadRepositories().catch(error => {
 });
 loadOpportunities().catch(error => {
   els.scanStatus.textContent = error.message;
+  els.list.setAttribute('aria-busy', 'false');
+  els.paginationSummary.textContent = 'Couldn’t load issues';
   els.list.innerHTML = `<div class="detail-empty">${escapeHtml(error.message)}</div>`;
 });
 loadHealth().catch(error => {
   els.lastRunSummary.textContent = error.message;
+});
+loadBitcoinProjects().catch(error => {
+  els.ecosystemStatus.textContent = error.message;
 });

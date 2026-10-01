@@ -1,6 +1,90 @@
-# Repository Intelligence Dashboard
+# Bitcoin Contributor Intelligence
 
-An AI-powered operations dashboard that scans GitHub repositories for high-signal implementation opportunities, generates starter code, and delivers a daily digest to your team.
+Finding a Bitcoin issue to work on is not the hard part. There are thousands of
+open issues across Core, Lightning, wallets, privacy and ecash. The hard part is
+that most of them are already taken, already fixed, waiting on a design decision,
+or were abandoned two years ago — and none of that is visible from the issue list.
+
+This agent does that filtering for you and delivers the result to Telegram every
+morning and to a dashboard you can work from. It reads the thread, the linked
+PRs, and the source files an issue mentions, then tells you what the maintainer
+is actually asking for, which files you would touch, and whether the issue is
+genuinely free.
+
+**Who it is for:** anyone who wants to contribute to Bitcoin open source and does
+not want to spend a weekend on an issue somebody else quietly claimed.
+
+- **New to Bitcoin OSS?** Open the dashboard, pick an area, add a project. Or add
+  nothing — scans fall back to [42 curated projects](#the-bitcoin-ecosystem-catalogue)
+  that take outside contributions.
+- **Already contributing?** Add your repos to the watchlist, set
+  `BITCOIN_FOCUS_AREAS`, link your PRs with `/pr`, and the ranker learns what you
+  actually ship.
+- **Running a project or a study cohort?** Point one bot at your repos and every
+  subscriber gets the same triaged queue each morning.
+
+---
+
+## The Bitcoin ecosystem catalogue
+
+`src/bitcoin-ecosystem.js` holds 42 Bitcoin projects that accept outside
+contributions, grouped into 11 areas. Every entry was checked against the GitHub
+API: the repo resolves, is not archived, and the language is what GitHub reports.
+
+| Area | Key | Projects include |
+|---|---|---|
+| Consensus & node | `core` | bitcoin/bitcoin, bitcoin/bips, btcsuite/btcd, bitcoin-dev-project/warnet |
+| Lightning | `lightning` | lnd, Core Lightning, eclair, LDK, lightning/bolts, lnbits, Zeus |
+| Wallets & keys | `wallet` | electrum, sparrow, BlueWallet, HWI, bdk |
+| Libraries & primitives | `library` | secp256k1, rust-bitcoin, rust-miniscript, bitcoinjs-lib |
+| Privacy | `privacy` | rust-payjoin, WalletWasabi |
+| Payments & merchant | `payments` | btcpayserver, boltz-backend |
+| Ecash & L2 | `ecash` | fedimint, cashu (nutshell, cdk), elements, ark, bisq |
+| Mining | `mining` | stratum-mining/stratum (Stratum V2) |
+| Infrastructure & explorers | `infra` | mempool, electrs, esplora, umbrel |
+| Design & UX | `design` | BitcoinDesign/Guide |
+| Education & docs | `education` | bitcoinbook, decoding-bitcoin |
+
+Each project carries a language and a `level` — `newcomer`, `intermediate`, or
+`deep` — which describes **how much Bitcoin-specific context you need before the
+code makes sense**, not how hard the language is. `bitcoinjs-lib` is `newcomer`;
+`secp256k1` is `deep`.
+
+Three things use the catalogue:
+
+1. **Scan targets.** An empty watchlist used to mean the BitcoinDevs board or
+   nothing at all. Now the order is: your watchlist → the BitcoinDevs
+   good-first-issue board → the curated list. A fresh install produces a useful
+   queue with zero configuration.
+2. **Ranking.** Issues in a known Bitcoin project rank up. With
+   `BITCOIN_FOCUS_AREAS=lightning,privacy` set, issues in those areas rank up
+   further and everything else is nudged down — a preference, not a filter, so a
+   standout issue elsewhere still surfaces. An area merely *guessed* from a repo
+   name counts for half as much as one in the catalogue.
+3. **Browsing.** `/projects`, `/areas` and `/issues` in Telegram, and the
+   "Start here" panel on the dashboard.
+
+To add a project, append an entry to `BITCOIN_PROJECTS` and run `npm test` — the
+suite checks the shape, rejects duplicates, and fails if an area ends up empty.
+
+---
+
+## Walkthrough and demo material
+
+- **[`public/walkthrough.html`](public/walkthrough.html)** — a self-guided
+  walkthrough of the whole path, web and Telegram, with the project catalogue
+  browsable inline. It is served by the dashboard at `/walkthrough.html`, where
+  it pulls the live catalogue from `/api/bitcoin-projects` so it cannot drift
+  from the code. Opened as a plain file it falls back to an embedded snapshot.
+- **`demo/bitcoin-contributor-demo.mp4`** — a rendered 1080p demo of the real
+  app, about 60 seconds, silent with burned-in captions. Regenerate it with
+  `npm run demo:seed && npm run demo:record && npm run demo:encode` (needs
+  `npm install --no-save puppeteer-core` and `ffmpeg`). Re-run it after any
+  dashboard change, since the captions are written against specific panels.
+- **[`docs/demo-video-script.md`](docs/demo-video-script.md)** — a shot-by-shot
+  production script for a 4:30 demo recording: prep checklist, timings, the
+  exact clicks and commands, narration, burn-in captions, and what to cut if it
+  runs long.
 
 ---
 
@@ -26,6 +110,7 @@ src/
 ├── news.js                 ← Multi-source news aggregator (RSS + APIs)
 ├── airtable.js             ← Airtable record writer
 ├── whatsapp.js             ← Telegram (primary) + WhatsApp/CallMeBot (fallback)
+├── bitcoin-ecosystem.js    ← Curated Bitcoin project catalogue + area ranking
 └── config.js               ← Environment variable loader
 scripts/
 └── setup-airtable.js       ← One-time Airtable field creator
@@ -143,6 +228,9 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 
 | Command | Who can use it | What it does |
 |---|---|---|
+| `/projects [area]` | Anyone, no subscription | Lists the curated Bitcoin projects. With no area, shows the 11 areas |
+| `/areas` | Anyone, no subscription | Lists the ecosystem areas and what each covers |
+| `/issues [area]` | Anyone, no subscription | Shows what is open right now from the last scan. Never triggers a scan |
 | `/start` or `/subscribe` | Anyone | Subscribes that Telegram chat to daily digest notifications |
 | `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
 | `/status` | Anyone | Confirms the bot is running |
@@ -525,11 +613,16 @@ WHATSAPP_APIKEY=...
 # Cron schedule (default: 8am Nairobi daily)
 SCAN_SCHEDULE=0 8 * * *
 
-# BitcoinDevs fallback discovery
+# Which Bitcoin work you want. Areas are ranked up; everything else is nudged
+# down but never hidden. Send /areas to the bot for the full list.
+BITCOIN_FOCUS_AREAS=lightning,privacy
+PREFERRED_LANGUAGES=Rust,Python,TypeScript
+
+# BitcoinDevs discovery, then the curated catalogue as a floor
 BITCOINDEVS_ISSUES_URL=https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue
 BITCOINDEVS_MAX_REPOS=12
 BITCOINDEVS_DISCOVERY=true
-PREFERRED_LANGUAGES=Rust,Python,TypeScript
+BITCOIN_SEED_REPOS=12
 
 # Weekly workflow sets this automatically
 DIGEST_MODE=daily
@@ -563,8 +656,16 @@ Manage repositories from the dashboard:
 2. Add `owner/repo` or a GitHub repo URL in the watchlist form
 3. Use `Run scan now` or let the daily schedule use the saved watchlist
 
-If no repositories are saved, scheduled scans discover repositories from BitcoinDevs good-first-issues instead.
-Those discoveries are persisted locally, exact BitcoinDevs issue URLs are scanned first, and each dashboard opportunity shows its source and local fit score.
+If no repositories are saved, scans fall back in order:
+
+1. **BitcoinDevs good-first-issues** — scraped live. Discoveries are persisted
+   locally and the exact issue URLs are scanned first.
+2. **The curated catalogue** — used when the board is unreachable or empty, so a
+   scan is never a no-op. Spread across areas rather than taking the first N, and
+   filtered by `BITCOIN_FOCUS_AREAS` and `PREFERRED_LANGUAGES` when set.
+
+Each dashboard opportunity shows its source, its ecosystem area, and its local
+fit score.
 
 ---
 
