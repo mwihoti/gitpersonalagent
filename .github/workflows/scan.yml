@@ -41,6 +41,7 @@ jobs:
           # without editing this file: default | all | goodfirst | medium.
           SCAN_MODE: ${{ vars.DAILY_SCAN_MODE || 'default' }}
           DIGEST_MAX_PER_REPO: ${{ vars.DIGEST_MAX_PER_REPO || '2' }}
+          DIGEST_OPPORTUNITY_LIMIT: ${{ vars.DIGEST_OPPORTUNITY_LIMIT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # auto-provided by Actions
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}  # free at aistudio.google.com
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}      # fallback when all Gemini models are unavailable

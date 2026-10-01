@@ -54,6 +54,17 @@ const SCAN_MODES = {
   },
 };
 
+// DIGEST_OPPORTUNITY_LIMIT raises or lowers how many picks a plain scan asks
+// for. The explicit modes keep their own, larger limits.
+function scanConfigFor(mode) {
+  const base = SCAN_MODES[mode];
+  const override = Number(process.env.DIGEST_OPPORTUNITY_LIMIT);
+  if (mode === 'default' && Number.isFinite(override) && override > 0) {
+    return { ...base, opportunityLimit: Math.min(50, Math.round(override)), issuesPerRepo: Math.max(base.issuesPerRepo, Math.ceil(override / 4)) };
+  }
+  return base;
+}
+
 function normalizeScanMode(mode) {
   const value = String(mode || 'default').trim().toLowerCase();
   if (value === 'good-first' || value === 'good_first' || value === 'good') return 'goodfirst';
@@ -186,7 +197,7 @@ async function applyTriage(repoData, options = {}) {
 async function deepenDigest(digest, options = {}) {
   const {
     logger = console,
-    limit = Number(process.env.DIGEST_ANALYZE_LIMIT) || 8,
+    limit = Number(process.env.DIGEST_ANALYZE_LIMIT) || 50,
     // A tightly rate-limited provider cannot serve two analyses at once.
     concurrency = isTightBudget() ? 1 : 2,
     analyze = analyzeIssue,
@@ -367,7 +378,7 @@ async function runScan(options = {}) {
     dedupe = true,
   } = options;
   const normalizedScanMode = normalizeScanMode(scanMode);
-  const scanConfig = SCAN_MODES[normalizedScanMode];
+  const scanConfig = scanConfigFor(normalizedScanMode);
 
   return runWithLock(async run => {
     const startedAt = new Date().toISOString();

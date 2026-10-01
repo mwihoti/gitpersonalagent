@@ -462,6 +462,7 @@ are set to `Done` (or whichever option your Status field maps to).
 
 | Variable | Default | Effect |
 |---|---|---|
+| `DIGEST_OPPORTUNITY_LIMIT` | `8` | Picks a plain scan asks the model for (`/scan all` 24, `goodfirst` 16, `medium` 12, weekly 12) |
 | `DIGEST_MAX_PER_REPO` | `2` | Cap on opportunities per repository in one digest (`0` disables) |
 | `DIGEST_DETAIL_LIMIT` | `8` | Maximum per-item detail messages |
 | `DIGEST_INDEX_LIMIT` | `12` | Maximum lines in the summary index |
@@ -472,7 +473,7 @@ are set to `Done` (or whichever option your Status field maps to).
 | `GITHUB_FETCH_TIMELINE` | `true` | Set `false` to skip linked-PR lookups (saves one request per issue) |
 | `SCAN_MODE` | `default` | Mode for `node agent.js --scan`; the daily workflow reads the `DAILY_SCAN_MODE` repository variable |
 | `DIGEST_BODY_CHARS` | `1500` | Issue body characters sent to the digest model (was 120) |
-| `DIGEST_ANALYZE_LIMIT` | `8` | Opportunities that get the deep analysis per scan |
+| `DIGEST_ANALYZE_LIMIT` | all picks | Cap on deep analyses per scan |
 | `DIGEST_DEEP_ANALYSIS` | `true` | Set `false` to skip deep analysis in scans |
 
 Messages use Telegram HTML (linked titles, `code` spans). If Telegram rejects a

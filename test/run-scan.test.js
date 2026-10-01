@@ -690,3 +690,32 @@ test('a heuristic analysis never replaces the model write-up, and a full Airtabl
   assert.deepEqual(item.files_to_change.map(file => file.path), ['real.c']);
   assert.equal(notifiedDigest.persistence_error, 'Airtable base is at its record limit');
 });
+
+test('DIGEST_OPPORTUNITY_LIMIT changes how many picks a plain scan asks for', async t => {
+  process.env.DIGEST_OPPORTUNITY_LIMIT = '15';
+  t.after(() => { delete process.env.DIGEST_OPPORTUNITY_LIMIT; });
+  let analysisOptions = null;
+  const { runScan } = await loadRunScanWithStubs(t, {
+    github: { scanRepos: async () => [{ issues: [{ number: 1, url: 'https://github.com/o/r/issues/1' }], repo: 'o/r' }], fetchIssueStatus: async () => null, parseIssueUrl: () => null },
+    gemma: { analyzeWithGemma: async (_r, _n, options) => { analysisOptions = options; return { date: '2026-10-01', contest_digest: [], quick_plan: 'p', tech_news_summary: [] }; } },
+    news: { fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }) },
+    airtable: { filterUnchangedDigest: async d => d, loadTrackedRecords: async () => ({ seen: new Map(), records: [] }), recordIssueEvents: async () => 0, saveDigest: async () => [] },
+    repositories: { getScanTargets: async () => ({ source: 'watchlist', repos: ['o/r'], issues: [] }) },
+    whatsapp: { sendNotification: async () => {}, buildDigestMessages: () => ['d'], DIGEST_PARSE_MODE: 'HTML' },
+  });
+
+  await runScan({ trigger: 'test' });
+  assert.equal(analysisOptions.opportunityLimit, 15);
+  assert.equal(analysisOptions.issuesPerRepo, 4);
+
+  const all = await loadRunScanWithStubs(t, {
+    github: { scanRepos: async () => [{ issues: [{ number: 2, url: 'https://github.com/o/r/issues/2' }], repo: 'o/r' }], fetchIssueStatus: async () => null, parseIssueUrl: () => null },
+    gemma: { analyzeWithGemma: async (_r, _n, options) => { analysisOptions = options; return { date: '2026-10-01', contest_digest: [], quick_plan: 'p', tech_news_summary: [] }; } },
+    news: { fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }) },
+    airtable: { filterUnchangedDigest: async d => d, loadTrackedRecords: async () => ({ seen: new Map(), records: [] }), recordIssueEvents: async () => 0, saveDigest: async () => [] },
+    repositories: { getScanTargets: async () => ({ source: 'watchlist', repos: ['o/r'], issues: [] }) },
+    whatsapp: { sendNotification: async () => {}, buildDigestMessages: () => ['d'], DIGEST_PARSE_MODE: 'HTML' },
+  });
+  await all.runScan({ trigger: 'test', scanMode: 'all', dedupe: false });
+  assert.equal(analysisOptions.opportunityLimit, 24, 'explicit modes keep their own limit');
+});
