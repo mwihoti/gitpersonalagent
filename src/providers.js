@@ -39,12 +39,37 @@ function tpm(name, fallback) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+// Rate limits reported by the provider itself (x-ratelimit-limit-tokens),
+// learned from responses in this process. An explicit <NAME>_TPM wins; the
+// learned value beats the built-in default, so a paid tier is used in full
+// without any configuration.
+const learnedLimits = new Map();
+
+function learnLimit(provider, headers) {
+  const raw = headers && headers.get ? headers.get('x-ratelimit-limit-tokens') : null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return;
+  if (learnedLimits.get(provider.name) !== value) {
+    learnedLimits.set(provider.name, value);
+    if (!provider.tpmExplicit && value !== provider.tpm) {
+      console.log(`  ${provider.label}: rate limit is ${value} tokens/min (reported by the API); sizing prompts to it`);
+    }
+  }
+}
+
+function effectiveTpm(provider) {
+  if (provider.tpmExplicit) return provider.tpm;
+  const learned = learnedLimits.get(provider.name);
+  return learned === undefined ? provider.tpm : learned;
+}
+
 // Providers whose key was rejected (401/403) in this process. A blocked key
 // stays blocked, so there is no point calling it again for every request.
 const deadProviders = new Set();
 
 function resetProviderState() {
   deadProviders.clear();
+  learnedLimits.clear();
 }
 
 function providerRegistry() {
@@ -57,6 +82,7 @@ function providerRegistry() {
       jsonMode: true,
       maxTokensCap: 16000,
       tpm: tpm('GEMINI_TPM', 0),
+      tpmExplicit: process.env.GEMINI_TPM !== undefined && process.env.GEMINI_TPM !== '',
     },
     groq: {
       label: 'Groq',
@@ -72,6 +98,7 @@ function providerRegistry() {
       // counting prompt plus requested output. Raise GROQ_TPM on a paid tier
       // (or set 0 for no limit) to send fuller prompts.
       tpm: tpm('GROQ_TPM', 8000),
+      tpmExplicit: process.env.GROQ_TPM !== undefined && process.env.GROQ_TPM !== '',
     },
     xai: {
       label: 'xAI Grok',
@@ -81,6 +108,7 @@ function providerRegistry() {
       jsonMode: true,
       maxTokensCap: 16000,
       tpm: tpm('XAI_TPM', 0),
+      tpmExplicit: process.env.XAI_TPM !== undefined && process.env.XAI_TPM !== '',
     },
     fallback: {
       label: env('FALLBACK_LABEL') || 'Fallback',
@@ -90,6 +118,7 @@ function providerRegistry() {
       jsonMode: false,
       maxTokensCap: 8192,
       tpm: tpm('FALLBACK_TPM', 0),
+      tpmExplicit: process.env.FALLBACK_TPM !== undefined && process.env.FALLBACK_TPM !== '',
     },
   };
 }
@@ -146,9 +175,10 @@ function sleep(ms) {
 // is deliberately conservative for JSON and code.
 function budgetFor(provider, requestedMaxTokens, systemLength = 0) {
   const cap = Math.min(requestedMaxTokens, provider.maxTokensCap || requestedMaxTokens);
-  if (!provider.tpm) return { maxTokens: cap, promptChars: Infinity };
-  const maxTokens = Math.min(cap, Math.floor(provider.tpm * 0.35));
-  const promptTokens = provider.tpm - maxTokens - 200;
+  const limit = effectiveTpm(provider);
+  if (!limit) return { maxTokens: cap, promptChars: Infinity };
+  const maxTokens = Math.min(cap, Math.floor(limit * 0.35));
+  const promptTokens = limit - maxTokens - 200;
   return { maxTokens, promptChars: Math.max(1500, promptTokens * 3 - systemLength) };
 }
 
@@ -164,7 +194,8 @@ function promptBudget({ system = '', maxTokens = 8000 } = {}) {
 // requests one at a time and keep outputs short.
 function isTightBudget() {
   const [first] = activeProviders({ live: true });
-  return Boolean(first && first.tpm && first.tpm <= 20000);
+  const limit = first ? effectiveTpm(first) : 0;
+  return Boolean(limit && limit <= 20000);
 }
 
 function retryDelayMs(headers, text) {
@@ -210,12 +241,14 @@ async function callModel(provider, model, { system, user, maxTokens, temperature
     signal: AbortSignal.timeout(timeoutMs),
   });
 
+  learnLimit(provider, res.headers);
+  const limitTokens = Number(res.headers && res.headers.get ? res.headers.get('x-ratelimit-limit-tokens') : 0) || 0;
   if (res.ok) {
     const data = await res.json();
-    return { ok: true, content: data.choices?.[0]?.message?.content || '' };
+    return { ok: true, content: data.choices?.[0]?.message?.content || '', limitTokens };
   }
   const text = await res.text().catch(() => '');
-  return { ok: false, status: res.status, error: firstLine(text), retryAfterMs: res.status === 429 ? retryDelayMs(res.headers, text) : 0 };
+  return { ok: false, status: res.status, error: firstLine(text), retryAfterMs: res.status === 429 ? retryDelayMs(res.headers, text) : 0, limitTokens };
 }
 
 // Walk the chain until a model returns something `parse` accepts.
@@ -344,6 +377,7 @@ async function probeModels({ timeoutMs = 30_000 } = {}) {
         results.push({
           provider: provider.name,
           model,
+          limitTokens: result.limitTokens || 0,
           // Reachable but silent is not usable for a scan.
           ok: result.ok && Boolean(answer),
           status: result.ok ? 200 : result.status,
@@ -387,7 +421,7 @@ async function listAvailableModels({ timeoutMs = 20_000 } = {}) {
 
 // Safe-to-expose summary for /api/health and logs: names only, never keys.
 function describeProviders() {
-  return activeProviders().map(provider => ({ name: provider.name, label: provider.label, models: provider.models }));
+  return activeProviders().map(provider => ({ name: provider.name, label: provider.label, models: provider.models, tpm: effectiveTpm(provider) }));
 }
 
 module.exports = {

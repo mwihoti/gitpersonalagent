@@ -6,6 +6,7 @@ const { fetchNews } = require('./news');
 const { filterUnchangedDigest, saveDigest, loadTrackedRecords, recordIssueEvents } = require('./airtable');
 const feedback = require('./feedback');
 const { buildEngineeringReport } = require('./pr-tracking');
+const { planQueueRefresh } = require('./queue-refresh');
 const { getScanTargets } = require('./repositories');
 const { runWithLock } = require('./scan-state');
 const { sendNotification, buildDigestMessages, DIGEST_PARSE_MODE } = require('./whatsapp');
@@ -26,7 +27,7 @@ const SCAN_MODES = {
   default: {
     label: 'top prioritized issues',
     githubMode: 'prioritized',
-    opportunityLimit: 8,
+    opportunityLimit: 15,
     issuesPerRepo: 4,
     scanLabel: 'top prioritized issues per repo',
   },
@@ -52,6 +53,18 @@ const SCAN_MODES = {
     scanLabel: 'medium effort implementation issues',
   },
 };
+
+// DIGEST_OPPORTUNITY_LIMIT raises or lowers how many picks a plain scan asks
+// for. The explicit modes keep their own, larger limits.
+function scanConfigFor(mode, requested = 0) {
+  const base = SCAN_MODES[mode];
+  const env = Number(process.env.DIGEST_OPPORTUNITY_LIMIT);
+  // A number given with the command beats the env default, which beats the mode's own.
+  const wanted = requested > 0 ? requested : (mode === 'default' && Number.isFinite(env) && env > 0 ? env : 0);
+  if (!wanted) return base;
+  const limit = Math.max(1, Math.min(50, Math.round(wanted)));
+  return { ...base, opportunityLimit: limit, issuesPerRepo: Math.max(base.issuesPerRepo, Math.ceil(limit / 4)) };
+}
 
 function normalizeScanMode(mode) {
   const value = String(mode || 'default').trim().toLowerCase();
@@ -185,7 +198,7 @@ async function applyTriage(repoData, options = {}) {
 async function deepenDigest(digest, options = {}) {
   const {
     logger = console,
-    limit = Number(process.env.DIGEST_ANALYZE_LIMIT) || 8,
+    limit = Number(process.env.DIGEST_ANALYZE_LIMIT) || 50,
     // A tightly rate-limited provider cannot serve two analyses at once.
     concurrency = isTightBudget() ? 1 : 2,
     analyze = analyzeIssue,
@@ -364,14 +377,15 @@ async function runScan(options = {}) {
     trigger = 'manual',
     scanMode = 'default',
     dedupe = true,
+    opportunityLimit = 0,
   } = options;
   const normalizedScanMode = normalizeScanMode(scanMode);
-  const scanConfig = SCAN_MODES[normalizedScanMode];
+  const scanConfig = scanConfigFor(normalizedScanMode, Number(opportunityLimit) || 0);
 
   return runWithLock(async run => {
     const startedAt = new Date().toISOString();
     run.scanMode = normalizedScanMode;
-    logger.log(`\n[${startedAt}] Starting repository intelligence scan (${scanConfig.label})...`);
+    logger.log(`\n[${startedAt}] Starting repository intelligence scan (${scanConfig.label}, up to ${scanConfig.opportunityLimit} picks)...`);
 
     const targets = await getScanTargets();
     const repos = targets.repos || [];
@@ -485,6 +499,21 @@ async function runScan(options = {}) {
     }
     digest.learning = feedback.describePreferences(preferences);
 
+    // Housekeeping: retire backlog that closed upstream or was never touched.
+    if (dedupe && process.env.QUEUE_REFRESH !== 'false') {
+      try {
+        const refresh = await planQueueRefresh(trackedRecords, {
+          logger,
+          maxChecks: Number(process.env.QUEUE_STATUS_CHECKS) || 20,
+          skipUrls: new Set([...linkedPRsByIssue.keys()]),
+        });
+        digest.housekeeping = { ...refresh.counts, events: refresh.actions.map(action => action.event) };
+        run.archived = refresh.counts.archive;
+      } catch (error) {
+        logger.warn(`     Queue refresh skipped: ${error.message}`);
+      }
+    }
+
     run.timingsMs.analysis = Date.now() - analysisStarted;
     const count = digest.contest_digest?.length || 0;
     run.opportunities = count;
@@ -513,7 +542,7 @@ async function runScan(options = {}) {
       }
       const baselines = tracking.baselineEvents(annotated).map(event => ({ ...event, touch: false }));
       if (baselines.length) logger.log(`  Recording a first activity baseline for ${baselines.length} older records`);
-      tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || []), ...baselines])
+      tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || []), ...(digest.housekeeping?.events || []), ...baselines])
         .catch(e => logger.warn(`  Record updates skipped: ${e.message}`)));
     }
     if (notify) {

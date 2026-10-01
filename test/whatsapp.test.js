@@ -12,6 +12,7 @@ const {
   messageText,
   normalizeCommand,
   parseScanMode,
+  parseScanRequest,
   sendTelegramToChat,
   subscribeTelegramChat,
   unsubscribeTelegramChat,
@@ -80,10 +81,10 @@ test("buildDigestMessages splits summary and opportunity details", () => {
   assert.match(messages[1], /Issue: https:\/\/github.com\/bitcoin\/bitcoin\/issues\/35399/);
 });
 
-test("buildDigestMessages sends up to 8 opportunity details by default", () => {
+test("buildDigestMessages sends up to 15 opportunity details by default", () => {
   const digest = {
     date: "2026-05-28",
-    contest_digest: Array.from({ length: 10 }, (_, index) => ({
+    contest_digest: Array.from({ length: 18 }, (_, index) => ({
       opportunity: `Opportunity ${index + 1}`,
       repo: "bitcoin/bitcoin",
       issue_url: `https://github.com/bitcoin/bitcoin/issues/${index + 1}`,
@@ -98,8 +99,8 @@ test("buildDigestMessages sends up to 8 opportunity details by default", () => {
 
   const messages = buildDigestMessages(digest);
 
-  assert.equal(messages.length, 9);
-  assert.match(messages[8], /Opportunity 8 of 8/);
+  assert.equal(messages.length, 16);
+  assert.match(messageText(messages[15]), /Opportunity 15 of 15/);
 });
 
 test("buildDigestMessages renders a changelog and only details new or updated items", () => {
@@ -382,6 +383,15 @@ test("normalizeCommand accepts slash, plain, and bot-addressed commands", () => 
     "status",
   );
   assert.equal(normalizeCommand("/scan now"), "scan");
+});
+
+test("parseScanRequest reads a count in any position and clamps it", () => {
+  assert.deepEqual(parseScanRequest("/scan"), { mode: "default", limit: 0 });
+  assert.deepEqual(parseScanRequest("/scan 20"), { mode: "default", limit: 20 });
+  assert.deepEqual(parseScanRequest("/scan all 30"), { mode: "all", limit: 30 });
+  assert.deepEqual(parseScanRequest("/scan 10 goodfirst"), { mode: "goodfirst", limit: 10 });
+  assert.deepEqual(parseScanRequest("/scan 999"), { mode: "default", limit: 50 });
+  assert.deepEqual(parseScanRequest("/scan@bot medium"), { mode: "medium", limit: 0 });
 });
 
 test("parseScanMode recognizes admin scan modes", () => {

@@ -26,6 +26,7 @@ if (!arg || arg === '--scan') {
     : process.env.DIGEST_MODE !== 'weekly';
   run({
     scanMode: process.env.SCAN_MODE || 'default',
+    opportunityLimit: Number(process.env.SCAN_LIMIT) || 0,
     dedupe,
     ...(process.env.SCAN_TRIGGER ? { trigger: process.env.SCAN_TRIGGER } : {}),
   }).then(() => {

@@ -48,6 +48,10 @@ function deriveOutcome(record, now = Date.now()) {
   if (/\[outcome merged\]/i.test(log) || /\bmerged\b/i.test(status)) {
     return { outcome: 'merged', reason: '' };
   }
+  // Closed upstream or auto-archived by the bot: says nothing about taste.
+  if (/\[outcome (?:archived|closed-upstream)\]/i.test(log)) {
+    return { outcome: 'archived', reason: '' };
+  }
   if (reasonMatch || (dismissMatch && /done|closed|dropped|skip/i.test(status))) {
     const reason = normalizeKey((reasonMatch && reasonMatch.groups.reason) || (dismissMatch && dismissMatch.groups && dismissMatch.groups.reason) || '');
     return { outcome: 'dismissed', reason };
@@ -82,7 +86,7 @@ function buildPreferenceModel(records = [], options = {}) {
   const efforts = new Map();
   const sources = new Map();
   const languages = new Map();
-  const counts = { merged: 0, pr_opened: 0, claimed: 0, dismissed: 0, ignored: 0, pending: 0 };
+  const counts = { merged: 0, pr_opened: 0, claimed: 0, dismissed: 0, ignored: 0, archived: 0, pending: 0 };
   const dismissReasons = new Map();
 
   for (const record of records) {
