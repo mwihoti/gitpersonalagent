@@ -6,6 +6,7 @@ const { fetchNews } = require('./news');
 const { filterUnchangedDigest, saveDigest, loadTrackedRecords, recordIssueEvents } = require('./airtable');
 const feedback = require('./feedback');
 const { buildEngineeringReport } = require('./pr-tracking');
+const { planQueueRefresh } = require('./queue-refresh');
 const { getScanTargets } = require('./repositories');
 const { runWithLock } = require('./scan-state');
 const { sendNotification, buildDigestMessages, DIGEST_PARSE_MODE } = require('./whatsapp');
@@ -485,6 +486,21 @@ async function runScan(options = {}) {
     }
     digest.learning = feedback.describePreferences(preferences);
 
+    // Housekeeping: retire backlog that closed upstream or was never touched.
+    if (dedupe && process.env.QUEUE_REFRESH !== 'false') {
+      try {
+        const refresh = await planQueueRefresh(trackedRecords, {
+          logger,
+          maxChecks: Number(process.env.QUEUE_STATUS_CHECKS) || 20,
+          skipUrls: new Set([...linkedPRsByIssue.keys()]),
+        });
+        digest.housekeeping = { ...refresh.counts, events: refresh.actions.map(action => action.event) };
+        run.archived = refresh.counts.archive;
+      } catch (error) {
+        logger.warn(`     Queue refresh skipped: ${error.message}`);
+      }
+    }
+
     run.timingsMs.analysis = Date.now() - analysisStarted;
     const count = digest.contest_digest?.length || 0;
     run.opportunities = count;
@@ -513,7 +529,7 @@ async function runScan(options = {}) {
       }
       const baselines = tracking.baselineEvents(annotated).map(event => ({ ...event, touch: false }));
       if (baselines.length) logger.log(`  Recording a first activity baseline for ${baselines.length} older records`);
-      tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || []), ...baselines])
+      tasks.push(recordIssueEvents([...buildRecordEvents(digest, seen), ...(digest.engineering?.events || []), ...(digest.housekeeping?.events || []), ...baselines])
         .catch(e => logger.warn(`  Record updates skipped: ${e.message}`)));
     }
     if (notify) {

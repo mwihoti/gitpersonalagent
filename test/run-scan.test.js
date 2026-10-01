@@ -34,6 +34,12 @@ async function loadRunScanWithStubs(t, stubs) {
     issueAnalysis: { analyzeIssue: async () => { throw new Error('no analysis in tests'); } },
     ...stubs,
   };
+  const queueRefreshPath = path.resolve(__dirname, '..', 'src', 'queue-refresh.js');
+  if (!stubs.queueRefresh) {
+    previous.set(queueRefreshPath, require.cache[queueRefreshPath]);
+    delete require.cache[queueRefreshPath];
+    require.cache[queueRefreshPath] = { id: queueRefreshPath, filename: queueRefreshPath, loaded: true, exports: { planQueueRefresh: async () => ({ actions: [], counts: { archive: 0, close: 0, note: 0 }, checked: 0, candidates: 0 }) } };
+  }
   if (stubs.gemma && !stubs.gemma.triageIssues) {
     stubs.gemma.triageIssues = async () => new Map();
     stubs.gemma.hasCloudProvider = () => false;

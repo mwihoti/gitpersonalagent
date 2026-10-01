@@ -70,6 +70,7 @@ jobs:
           MODEL_PROVIDERS: ${{ vars.MODEL_PROVIDERS }}       # order, e.g. groq,xai,gemini
           GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
           GROQ_MODELS: ${{ vars.GROQ_MODELS }}
+          GROQ_TPM: ${{ vars.GROQ_TPM }}  # optional; unset = read from the API
           XAI_MODELS: ${{ vars.XAI_MODELS }}
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}

@@ -481,6 +481,12 @@ function buildDigestMessage(digest) {
     sections.push(weeklyReviewSection(digest.weekly_review));
   }
 
+  const hk = digest.housekeeping;
+  if (hk && (hk.archive || hk.close)) {
+    const bits = [hk.close ? `${hk.close} closed upstream` : "", hk.archive ? `${hk.archive} archived after ${process.env.QUEUE_ARCHIVE_DAYS || 90} days untouched` : ""].filter(Boolean);
+    sections.push(`Housekeeping: ${html(bits.join(", "))}.`);
+  }
+
   if (numbered.length && digest.quick_plan) {
     sections.push(`<b>Execution plan</b>\n${html(truncate(digest.quick_plan, 500))}`);
   }

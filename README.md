@@ -292,7 +292,11 @@ FALLBACK_MODELS=meta-llama/llama-3.3-70b-instruct,mistralai/mistral-small
 
 Groq's free tier allows **8,000 tokens per minute per model**, counting the
 prompt and the requested answer. A full scan is far bigger than that, so the
-pipeline budgets for it (`GROQ_TPM`, default `8000`):
+pipeline budgets for it. The limit is **read from the API's own
+`x-ratelimit-limit-tokens` header** on the first response, so upgrading your
+Groq tier takes effect on the next scan with no configuration. `GROQ_TPM`
+overrides it when set (`0` means no limit); the built-in default before the
+first response is `8000`.
 
 - Prompts are **built to fit**: the digest input drops detail per issue before
   it drops repositories, triage sends one compact line per candidate, and the
@@ -442,6 +446,12 @@ More behaviours worth knowing:
 - **Two bots.** Add `TELEGRAM_BOT_TOKEN_2` to the Actions environment so both
   audiences get digests. A chat subscribed to both bots receives one copy, and
   an on-demand scan answers through the bot it was requested on.
+- **The queue cleans itself.** Each daily scan retires records whose issue
+  closed upstream, notes a new assignee once, and archives items that nobody
+  touched for `QUEUE_ARCHIVE_DAYS` (default 90). Archived and closed-upstream
+  items carry no weight in the learning loop. Run it by hand, and give the
+  survivors a deep analysis, with
+  `npm run refresh-queue -- --apply --analyze 10` (dry run without `--apply`).
 - **Storage problems are shown.** If Airtable refuses new rows (the free plan
   caps records per base), the digest says so. Run
   `npm run dedupe-airtable -- --apply` to clear duplicate rows.
