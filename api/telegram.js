@@ -52,9 +52,9 @@ function scanModeLabel(mode) {
 
 // Called by handleTelegramUpdate for /scan. Returns a status message that is
 // relayed to the requester.
-async function triggerScan({ scanMode = 'default', chatId = '', botId = '' } = {}) {
+async function triggerScan({ scanMode = 'default', chatId = '', botId = '', opportunityLimit = 0 } = {}) {
   if (isDispatchConfigured()) {
-    await dispatchScan({ scanMode, chatId, botId });
+    await dispatchScan({ scanMode, chatId, botId, limit: opportunityLimit });
     return {
       message: `Queued a ${scanModeLabel(scanMode)} scan on GitHub Actions. The digest lands here when it finishes — usually a few minutes.`,
     };
@@ -65,7 +65,7 @@ async function triggerScan({ scanMode = 'default', chatId = '', botId = '' } = {
   // which is exactly why dispatch is the recommended setup.
   const { runScan } = require('../src/run-scan');
   background(
-    runScan({ trigger: `telegram-${scanMode}`, scanMode, dedupe: false }),
+    runScan({ trigger: `telegram-${scanMode}`, scanMode, dedupe: false, opportunityLimit }),
   );
   return {
     message:

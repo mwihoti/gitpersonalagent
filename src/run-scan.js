@@ -27,7 +27,7 @@ const SCAN_MODES = {
   default: {
     label: 'top prioritized issues',
     githubMode: 'prioritized',
-    opportunityLimit: 8,
+    opportunityLimit: 15,
     issuesPerRepo: 4,
     scanLabel: 'top prioritized issues per repo',
   },
@@ -56,13 +56,14 @@ const SCAN_MODES = {
 
 // DIGEST_OPPORTUNITY_LIMIT raises or lowers how many picks a plain scan asks
 // for. The explicit modes keep their own, larger limits.
-function scanConfigFor(mode) {
+function scanConfigFor(mode, requested = 0) {
   const base = SCAN_MODES[mode];
-  const override = Number(process.env.DIGEST_OPPORTUNITY_LIMIT);
-  if (mode === 'default' && Number.isFinite(override) && override > 0) {
-    return { ...base, opportunityLimit: Math.min(50, Math.round(override)), issuesPerRepo: Math.max(base.issuesPerRepo, Math.ceil(override / 4)) };
-  }
-  return base;
+  const env = Number(process.env.DIGEST_OPPORTUNITY_LIMIT);
+  // A number given with the command beats the env default, which beats the mode's own.
+  const wanted = requested > 0 ? requested : (mode === 'default' && Number.isFinite(env) && env > 0 ? env : 0);
+  if (!wanted) return base;
+  const limit = Math.max(1, Math.min(50, Math.round(wanted)));
+  return { ...base, opportunityLimit: limit, issuesPerRepo: Math.max(base.issuesPerRepo, Math.ceil(limit / 4)) };
 }
 
 function normalizeScanMode(mode) {
@@ -376,14 +377,15 @@ async function runScan(options = {}) {
     trigger = 'manual',
     scanMode = 'default',
     dedupe = true,
+    opportunityLimit = 0,
   } = options;
   const normalizedScanMode = normalizeScanMode(scanMode);
-  const scanConfig = scanConfigFor(normalizedScanMode);
+  const scanConfig = scanConfigFor(normalizedScanMode, Number(opportunityLimit) || 0);
 
   return runWithLock(async run => {
     const startedAt = new Date().toISOString();
     run.scanMode = normalizedScanMode;
-    logger.log(`\n[${startedAt}] Starting repository intelligence scan (${scanConfig.label})...`);
+    logger.log(`\n[${startedAt}] Starting repository intelligence scan (${scanConfig.label}, up to ${scanConfig.opportunityLimit} picks)...`);
 
     const targets = await getScanTargets();
     const repos = targets.repos || [];

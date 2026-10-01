@@ -62,7 +62,7 @@ async function githubPost(url, token, body) {
   };
 }
 
-async function dispatchScan({ scanMode = 'default', chatId = '', botId = '' } = {}) {
+async function dispatchScan({ scanMode = 'default', chatId = '', botId = '', limit = 0 } = {}) {
   const { repo, token, ref, workflow } = dispatchConfig();
   if (!repo || !token) {
     throw new Error('GitHub Actions dispatch is not configured');
@@ -70,12 +70,13 @@ async function dispatchScan({ scanMode = 'default', chatId = '', botId = '' } = 
 
   const chat = String(chatId || '');
   const bot = String(botId || '');
+  const count = limit ? String(limit) : '';
 
   // 1. workflow_dispatch — Actions: write
   const viaWorkflow = await githubPost(
     `https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`,
     token,
-    { ref, inputs: { scan_mode: scanMode, chat_id: chat, bot_id: bot } },
+    { ref, inputs: { scan_mode: scanMode, chat_id: chat, bot_id: bot, limit: count } },
   );
   if (viaWorkflow.ok) return 'workflow_dispatch';
 
@@ -83,7 +84,7 @@ async function dispatchScan({ scanMode = 'default', chatId = '', botId = '' } = 
   const viaRepository = await githubPost(
     `https://api.github.com/repos/${repo}/dispatches`,
     token,
-    { event_type: EVENT_TYPE, client_payload: { scan_mode: scanMode, chat_id: chat, bot_id: bot } },
+    { event_type: EVENT_TYPE, client_payload: { scan_mode: scanMode, chat_id: chat, bot_id: bot, limit: count } },
   );
   if (viaRepository.ok) return 'repository_dispatch';
 

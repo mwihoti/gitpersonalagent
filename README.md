@@ -147,7 +147,8 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 | `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
 | `/status` | Anyone | Confirms the bot is running |
 | `/help` | Anyone | Shows available commands |
-| `/scan` | Admin chat only | Runs the normal top-priority scan immediately |
+| `/scan` | Admin chat only | Runs the normal top-priority scan immediately (15 issues) |
+| `/scan 25` | Admin chat only | Same, asking for 25 issues; works with any mode, e.g. `/scan all 30` |
 | `/scan all` | Admin chat only | Scans a broader set of open issues |
 | `/scan goodfirst` | Admin chat only | Focuses on good-first/BitcoinDevs issues |
 | `/scan medium` | Admin chat only | Focuses on medium-effort implementation issues |
@@ -462,10 +463,10 @@ are set to `Done` (or whichever option your Status field maps to).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DIGEST_OPPORTUNITY_LIMIT` | `8` | Picks a plain scan asks the model for (`/scan all` 24, `goodfirst` 16, `medium` 12, weekly 12) |
+| `DIGEST_OPPORTUNITY_LIMIT` | `15` | Picks a plain scan asks the model for (`/scan all` 24, `goodfirst` 16, `medium` 12, weekly 12). `/scan 25` overrides it for one run |
 | `DIGEST_MAX_PER_REPO` | `2` | Cap on opportunities per repository in one digest (`0` disables) |
-| `DIGEST_DETAIL_LIMIT` | `8` | Maximum per-item detail messages |
-| `DIGEST_INDEX_LIMIT` | `12` | Maximum lines in the summary index |
+| `DIGEST_DETAIL_LIMIT` | `15` | Maximum per-item detail messages |
+| `DIGEST_INDEX_LIMIT` | `20` | Maximum lines in the summary index |
 | `DIGEST_STILL_OPEN_LIMIT` | `8` | Lines in the Still open section |
 | `DIGEST_TRACK_DAYS` | `21` | How far back tracked issues are re-checked for closure or claims |
 | `DIGEST_STATUS_CHECKS` | `30` | Maximum GitHub status checks per run |

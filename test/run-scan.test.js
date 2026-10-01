@@ -135,7 +135,7 @@ test('runScan reuses the in-flight scan instead of starting a second one', async
 
   assert.equal(scanCalls, 1);
   assert.equal(scanOptions.mode, 'prioritized');
-  assert.equal(analysisOptions.opportunityLimit, 8);
+  assert.equal(analysisOptions.opportunityLimit, 15);
   assert.equal(saveCalls, 1);
   assert.equal(notifyCalls, 1);
   assert.equal(first.digest.contest_digest.length, 1);
@@ -707,6 +707,19 @@ test('DIGEST_OPPORTUNITY_LIMIT changes how many picks a plain scan asks for', as
   await runScan({ trigger: 'test' });
   assert.equal(analysisOptions.opportunityLimit, 15);
   assert.equal(analysisOptions.issuesPerRepo, 4);
+
+  // A number passed with the command beats the env default, in any mode.
+  const explicit = await loadRunScanWithStubs(t, {
+    github: { scanRepos: async () => [{ issues: [{ number: 3, url: 'https://github.com/o/r/issues/3' }], repo: 'o/r' }], fetchIssueStatus: async () => null, parseIssueUrl: () => null },
+    gemma: { analyzeWithGemma: async (_r, _n, options) => { analysisOptions = options; return { date: '2026-10-01', contest_digest: [], quick_plan: 'p', tech_news_summary: [] }; } },
+    news: { fetchNews: async () => ({ hackerNews: [], githubReleases: [], rssFeeds: [] }) },
+    airtable: { filterUnchangedDigest: async d => d, loadTrackedRecords: async () => ({ seen: new Map(), records: [] }), recordIssueEvents: async () => 0, saveDigest: async () => [] },
+    repositories: { getScanTargets: async () => ({ source: 'watchlist', repos: ['o/r'], issues: [] }) },
+    whatsapp: { sendNotification: async () => {}, buildDigestMessages: () => ['d'], DIGEST_PARSE_MODE: 'HTML' },
+  });
+  await explicit.runScan({ trigger: 'test', scanMode: 'all', dedupe: false, opportunityLimit: 30 });
+  assert.equal(analysisOptions.opportunityLimit, 30);
+  assert.equal(analysisOptions.issuesPerRepo, 20);
 
   const all = await loadRunScanWithStubs(t, {
     github: { scanRepos: async () => [{ issues: [{ number: 2, url: 'https://github.com/o/r/issues/2' }], repo: 'o/r' }], fetchIssueStatus: async () => null, parseIssueUrl: () => null },
