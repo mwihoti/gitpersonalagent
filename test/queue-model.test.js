@@ -45,3 +45,25 @@ test('queue filters combine repo, priority, and search while keeping active work
   assert.deepEqual(result.map(item => item.id), ['active', 'highest']);
   assert.equal(items[0].id, 'highest');
 });
+
+test('repository choices stay available without a watchlist and deduplicate every source', () => {
+  const choices = Q.repositoryChoices([
+    { repo: 'Owner/Wallet', status: 'New', score: 88 },
+    { repo: 'owner/wallet', status: 'Done', score: 99 },
+    { repo: 'a/library', status: 'In Progress', score: 75 },
+    { repo: '', status: 'New' },
+  ], [], [{ repo: 'OWNER/WALLET', language: 'Rust' }, { repo: 'b/node', language: 'Go' }]);
+  assert.equal(choices.length, 3);
+  const wallet = choices.find(choice => choice.repo.toLowerCase() === 'owner/wallet');
+  assert.equal(wallet.totalIssues, 2);
+  assert.equal(wallet.openMatches, 1);
+  assert.equal(wallet.bestScore, 88);
+  assert.equal(wallet.watching, false);
+  assert.equal(wallet.project.language, 'Rust');
+  const watched = Q.repositoryChoices([{ repo: 'Owner/Wallet', status: 'New' }], [{ id: 'saved', repo: 'owner/wallet', enabled: false }], [{ repo: 'OWNER/WALLET' }]);
+  assert.equal(watched.length, 1);
+  assert.equal(watched[0].id, 'saved');
+  assert.equal(watched[0].watching, true);
+  assert.equal(watched[0].enabled, false);
+  assert.equal(Q.filterIssues([{ repo: 'Owner/Wallet', status: 'New' }], { repo: watched[0].repo, status: 'Open' }).length, 1);
+});

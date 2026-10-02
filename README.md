@@ -657,6 +657,11 @@ Manage repositories from the dashboard:
 2. Add it to the watchlist, or browse the Bitcoin project directory.
 3. Use **Scan now** from Queue or Scans, or let the daily schedule run.
 
+The Repos badge counts available repositories from saved issues, the watchlist,
+and the project directory. Use **Choose a repository** to open its saved issues
+or check a new project. Watched counts are shown separately. Issue details have
+a **Back to queue** button that preserves your filters and scroll position.
+
 The watchlist switch pauses a repository without removing it or its saved
 issues. If every watched repository is paused, scans stop until one is enabled.
 **View schedule** shows the deployment's schedule; changes are managed through

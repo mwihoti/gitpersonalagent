@@ -52,6 +52,8 @@ h2, h3 { font-size: 15px; font-weight: 650; line-height: 1.5; }
 .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
 .breadcrumb a { text-decoration: none; }
 .breadcrumb a:hover { text-decoration: underline; }
+.breadcrumb .back-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; margin-right: 8px; border: 1px solid var(--line); border-radius: 4px; background: white; color: var(--ink); white-space: nowrap; }
+.breadcrumb .back-link:hover { background: var(--soft); text-decoration: none; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 13px; border: 1px solid var(--ink); border-radius: 5px; background: var(--ink); color: #fff; font-size: 12px; font-weight: 550; line-height: 1.4; text-decoration: none; white-space: nowrap; }
 .button:hover { background: #303e4c; border-color: #303e4c; }
 .button-secondary { background: #fff; color: var(--ink); border-color: var(--line); }
@@ -181,6 +183,13 @@ summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .recommendation-notes section { margin-top: 14px; font-size: 13px; }
 .recommendation-notes h4 { margin: 0 0 5px; font-size: 13px; }
 .repo-inspection { display: grid; grid-template-columns: minmax(260px,.8fr) minmax(0,1.7fr); gap: 28px; padding: 24px 26px; }
+.repo-picker-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 26px; border-bottom: 1px solid var(--line); }
+.repo-picker-bar label { color: var(--ink); font-size: 13px; font-weight: 600; gap: 3px; }
+.repo-picker-bar label span { font-size: 12px; font-weight: 400; }
+.repo-picker-bar select { flex: 0 1 440px; width: 100%; }
+.repo-inspection { scroll-margin-top: 110px; }
+.repo-choose { padding: 0; border: 0; background: none; color: var(--ink); font-size: 12px; font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.repo-choose:hover { text-decoration: underline; }
 .repo-check-form > p { margin-top: 7px; font-size: 13px; line-height: 1.65; }
 .inline-form { display: flex; gap: 7px; align-items: center; margin-top: 16px; }
 .inline-form input { flex: 1; width: 100%; }
@@ -325,6 +334,8 @@ summary { cursor: pointer; font-size: 13px; color: var(--muted); }
   .fit-number strong { font-size: 30px; }
   .step-remove { opacity: 1; }
   .repo-inspection { padding: 20px 18px; }
+  .repo-picker-bar { align-items: stretch; flex-direction: column; gap: 12px; padding: 18px; }
+  .repo-picker-bar select { flex: auto; }
   .inspection-result { padding: 16px; }
   .inspection-header { flex-wrap: wrap; }
   .repo-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }

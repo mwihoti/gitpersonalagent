@@ -36,13 +36,39 @@
     if (Array.isArray(item.labels)) return item.labels;
     return String(item.labels || '').split(',').map(label => label.trim()).filter(Boolean);
   }
+  function repositoryChoices(items = [], watched = [], projects = []) {
+    const repos = new Map();
+    function entry(name) {
+      const repo = String(name || '').trim();
+      if (!repo) return null;
+      const key = repo.toLowerCase();
+      if (!repos.has(key)) repos.set(key, { repo, watching: false, totalIssues: 0, openMatches: 0, bestScore: 0 });
+      return repos.get(key);
+    }
+    for (const item of items) {
+      const choice = entry(item.repo);
+      if (!choice) continue;
+      choice.totalIssues += 1;
+      if (isOpen(item)) { choice.openMatches += 1; choice.bestScore = Math.max(choice.bestScore, score(item)); }
+    }
+    for (const project of projects) {
+      const choice = entry(project.repo);
+      if (choice) choice.project = project;
+    }
+    for (const watchedRepo of watched) {
+      const choice = entry(watchedRepo.repo);
+      if (choice) Object.assign(choice, watchedRepo, { watching: true });
+    }
+    return [...repos.values()].sort((a, b) => Number(b.watching) - Number(a.watching)
+      || Number(b.totalIssues > 0) - Number(a.totalIssues > 0) || a.repo.localeCompare(b.repo));
+  }
   function filterIssues(items, filters) {
     const search = String(filters.search || '').toLowerCase().trim();
     return items.filter(item => {
       const status = displayStatus(item);
       const statusMatch = filters.status === 'Open' ? isOpen(item) : !filters.status || status === filters.status;
       const haystack = [item.opportunity, item.repo, item.owner, item.nextStep, ...labels(item)].join(' ').toLowerCase();
-      return statusMatch && (!filters.repo || item.repo === filters.repo)
+      return statusMatch && (!filters.repo || String(item.repo).toLowerCase() === filters.repo.toLowerCase())
         && (!filters.priority || item.priority === filters.priority) && (!search || haystack.includes(search));
     }).sort((a, b) => {
       const progress = Number(displayStatus(b) === 'In Progress') - Number(displayStatus(a) === 'In Progress');
@@ -67,5 +93,5 @@
         : { text: clean(line), at: '', who: '' };
     }).reverse();
   }
-  return { displayStatus, isOpen, editableStatus, parsePlan, serializePlan, availability, score, labels, filterIssues, initials, activityEntries };
+  return { displayStatus, isOpen, editableStatus, parsePlan, serializePlan, availability, score, labels, repositoryChoices, filterIssues, initials, activityEntries };
 });

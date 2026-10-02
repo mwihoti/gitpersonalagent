@@ -6,6 +6,7 @@ const safeUrl = value => { try { const url = new URL(value); return ['http:', 'h
 const createTag = (label, className = '') => `<span class="tag ${className}">${label}</span>`;
 const state = {
   items: [], repos: [], health: {}, learning: null, catalog: null, area: '', inspection: null,
+  repoChoice: '', repoLimit: 12,
   filters: { status: 'Open', repo: '', priority: '', search: '', sort: 'fit' }, limit: 20,
   view: 'queue', selected: null, draft: null, dirty: false, saving: false, running: false,
   loaded: false, queueScroll: 0, route: '', pendingRoute: null, undo: null,
@@ -86,8 +87,10 @@ async function loadHealth() {
 }
 function updateCounts() {
   $('queue-count').textContent = state.loaded ? state.items.filter(Q.isOpen).length : '—';
-  $('repos-count').textContent = state.repos.length;
+  $('repos-count').textContent = repositoryChoices().length;
+  $('repos-count').title = 'Repositories available from your queue, watchlist, and project directory';
 }
+function repositoryChoices() { return Q.repositoryChoices(state.items, state.repos, state.catalog?.projects || []); }
 function renderHeader() {
   const run = state.health.recentRuns?.[0];
   const scans = `<span class="muted">${run ? `Last scan ${escapeHtml(shortDate(run.startedAt, true).toLowerCase())}` : 'No scans yet'}</span><button type="button" class="button" data-scan ${state.running ? 'disabled' : ''}>${state.running ? 'Scanning…' : 'Scan now'}</button>`;
@@ -97,12 +100,11 @@ function renderHeader() {
   document.title = `${state.view === 'issue' ? state.draft?.opportunity || 'Issue' : $('page-title').textContent} · dan/queue`;
   if (state.view === 'issue' && state.draft) {
     $('page-title').classList.add('hidden');
-    $('page-subtitle').innerHTML = `<span class="breadcrumb"><a href="#queue">Queue</a><span>/</span><span>${escapeHtml(ref(state.draft))}</span></span>`;
+    $('page-subtitle').innerHTML = `<span class="breadcrumb"><a id="back-to-queue" class="back-link" href="#queue"><span aria-hidden="true">←</span> Back to queue</a><span>${escapeHtml(ref(state.draft))}</span></span>`;
     const dismissed = Q.displayStatus(state.draft) === 'Dismissed';
     $('page-actions').innerHTML = `<span class="muted" id="save-indicator" role="status">${state.dirty ? 'Unsaved changes' : 'Saved'}</span><button type="button" class="button button-secondary" data-${dismissed ? 'restore' : 'dismiss'}>${dismissed ? 'Restore issue' : 'Dismiss'}</button>${safeUrl(state.draft.issueUrl) ? `<a class="button button-secondary" href="${escapeHtml(safeUrl(state.draft.issueUrl))}" target="_blank" rel="noreferrer">Open on GitHub</a>` : ''}<button class="button" type="submit" form="detail-form" id="save-button" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>`;
   } else if (state.view === 'repos') {
-    const enabled = state.repos.filter(repo => repo.enabled !== false).length;
-    $('page-subtitle').textContent = `${state.repos.length} watched · ${enabled} included in scans`;
+    $('page-subtitle').textContent = `${repositoryChoices().length} available · ${state.repos.length} watched`;
     $('page-actions').innerHTML = '<button class="button button-secondary" type="button" data-schedule>View schedule</button>';
   } else if (state.view === 'scans') {
     $('page-subtitle').textContent = state.health.currentRun ? 'A scan is running' : scheduleText();
@@ -302,20 +304,46 @@ async function restoreIssue() {
 function renderRepos() {
   updateCounts();
   const runs = state.health.recentRuns || [];
-  const watched = state.repos;
-  if (!watched.length) {
-    $('watched-repos').innerHTML = '<div class="empty-state"><strong>No repositories watched yet</strong><p>Check a repository above, or browse the Bitcoin project directory below.</p></div>';
+  const choices = repositoryChoices();
+  const groups = [
+    ['Watching', choices.filter(repo => repo.watching)],
+    ['In your queue', choices.filter(repo => !repo.watching && repo.totalIssues)],
+    ['Project directory', choices.filter(repo => !repo.watching && !repo.totalIssues)],
+  ];
+  $('repo-picker').innerHTML = '<option value="">Select a repository…</option>' + groups.filter(([, repos]) => repos.length).map(([label, repos]) => `<optgroup label="${label}">${repos.map(repo => `<option value="${escapeHtml(repo.repo)}">${escapeHtml(repo.repo)}${repo.openMatches ? ` · ${repo.openMatches} open issues` : ''}</option>`).join('')}</optgroup>`).join('');
+  $('repo-picker').value = state.repoChoice;
+  const tracked = choices.filter(repo => repo.watching || repo.totalIssues);
+  const visible = tracked.slice(0, state.repoLimit);
+  if (!tracked.length) {
+    $('watched-repos').innerHTML = '<div class="empty-state"><strong>Choose your first repository</strong><p>Select a project above to check its issues, or enter any GitHub repository.</p></div>';
   } else {
-    $('watched-repos').innerHTML = `<table class="repo-table"><caption class="sr-only">Watched repositories</caption><colgroup><col class="repo-name-col"><col><col><col><col><col class="repo-actions-col"></colgroup><thead><tr><th scope="col">Watching</th><th scope="col">Open matches</th><th scope="col">Best fit now</th><th scope="col">Last scanned</th><th scope="col">Included in scans</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${watched.map(repo => {
-      const items = state.items.filter(item => item.repo.toLowerCase() === repo.repo.toLowerCase() && Q.isOpen(item));
-      const best = items.length ? Math.max(...items.map(Q.score)) : 0;
+    $('watched-repos').innerHTML = `<table class="repo-table"><caption class="sr-only">Repositories in your queue and watchlist</caption><colgroup><col class="repo-name-col"><col><col><col><col><col class="repo-actions-col"></colgroup><thead><tr><th scope="col">Repository</th><th scope="col">Open matches</th><th scope="col">Best fit now</th><th scope="col">Last scanned</th><th scope="col">Included in scans</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${visible.map(repo => {
       const run = runs.find(run => run.status === 'completed' && run.repositoryNames?.includes(repo.repo));
-      return `<tr><td class="repo-name"><a href="https://github.com/${escapeHtml(repo.repo)}" target="_blank" rel="noreferrer">${escapeHtml(repo.repo)}</a></td><td><button type="button" class="text-button" data-repo-matches="${escapeHtml(repo.repo)}" aria-label="Show ${items.length} open matches in ${escapeHtml(repo.repo)}">${items.length}</button></td><td>${scoreHtml({score:best},false)}</td><td class="muted">${repo.enabled === false ? 'Paused' : run ? escapeHtml(shortDate(run.startedAt,true)) : 'Not recorded'}</td><td><button type="button" class="switch" role="switch" aria-checked="${repo.enabled !== false}" aria-label="Include ${escapeHtml(repo.repo)} in scans" data-toggle-repo="${escapeHtml(repo.id)}"></button></td><td><button class="text-button" type="button" data-remove-repo="${escapeHtml(repo.id)}">Remove</button></td></tr>`;
+      return `<tr><td class="repo-name"><button type="button" class="repo-choose" data-choose-repo="${escapeHtml(repo.repo)}">${escapeHtml(repo.repo)}</button></td><td><button type="button" class="text-button" data-repo-matches="${escapeHtml(repo.repo)}" aria-label="Show ${repo.openMatches} open matches in ${escapeHtml(repo.repo)}">${repo.openMatches}</button></td><td>${scoreHtml({score:repo.bestScore},false)}</td><td class="muted">${repo.watching && repo.enabled === false ? 'Paused' : run ? escapeHtml(shortDate(run.startedAt,true)) : 'Not recorded'}</td><td>${repo.watching ? `<button type="button" class="switch" role="switch" aria-checked="${repo.enabled !== false}" aria-label="Include ${escapeHtml(repo.repo)} in scans" data-toggle-repo="${escapeHtml(repo.id)}"></button>` : '<span class="muted">Not watching</span>'}</td><td>${repo.watching ? `<button class="text-button" type="button" data-remove-repo="${escapeHtml(repo.id)}">Remove</button>` : `<button class="text-button" type="button" data-watch="${escapeHtml(repo.repo)}">Watch</button>`}</td></tr>`;
     }).join('')}</tbody></table>`;
   }
+  $('repos-pagination').innerHTML = tracked.length ? `<span>Showing ${visible.length} of ${tracked.length} repositories in your queue and watchlist.</span>${visible.length < tracked.length ? '<button class="text-button" type="button" data-more-repos>Show the rest</button>' : ''}` : '';
   if (state.inspection) renderInspection();
   if (state.catalog) renderDirectory();
   if (state.view === 'repos') renderHeader();
+}
+function openRepoQueue(repo) {
+  state.filters = { ...state.filters, repo, status: 'Open', search: '', priority: '' };
+  state.limit = 20;
+  state.queueScroll = 0;
+  $('search-input').value = '';
+  $('priority-filter').value = '';
+  renderQueue();
+  navigate('#queue');
+}
+async function chooseRepo(repo) {
+  state.repoChoice = repo;
+  $('repo-picker').value = repo;
+  const choice = repositoryChoices().find(choice => choice.repo.toLowerCase() === repo.toLowerCase());
+  if (choice?.openMatches) { openRepoQueue(choice.repo); return; }
+  $('repo-input').value = choice?.repo || repo;
+  document.querySelector('.repo-inspection').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  await inspectRepo({ preventDefault() {}, currentTarget: $('repo-form') });
 }
 function renderInspection() {
   const repo = state.inspection;
@@ -461,7 +489,7 @@ async function init() {
     showRoute(location.hash || '#queue',true);
   }
   $('access-button').textContent = state.key ? 'Workspace unlocked' : 'Workspace access';
-  fetch('/api/bitcoin-projects').then(response => response.ok ? response.json() : null).then(data=>{if(data){state.catalog=data;renderDirectory();}}).catch(()=>{});
+  fetch('/api/bitcoin-projects').then(response => response.ok ? response.json() : null).then(data=>{if(data){state.catalog=data;renderRepos();}}).catch(()=>{});
 }
 
 $('detail-form').addEventListener('submit',event=>{event.preventDefault();saveIssue();});
@@ -475,6 +503,7 @@ $('add-note-button').addEventListener('click',addNote);
 $('analyze-button').addEventListener('click',analyzeIssue);
 $('copy-code-button').addEventListener('click',async()=>{try {await navigator.clipboard.writeText($('detail-code').textContent);toast('Code copied.');}catch{toast('Couldn’t copy automatically. Select the code to copy it.');}});
 $('repo-form').addEventListener('submit',inspectRepo);
+$('repo-picker').addEventListener('change',async event=>{if(event.target.value){try{await chooseRepo(event.target.value);}catch(error){showNotice(error.message,true);}}});
 $('watchlist-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.currentTarget.querySelector('button');button.disabled=true;try{await watchRepo($('watchlist-input').value.trim());$('watchlist-input').value='';}catch(error){showNotice(error.message,true);}finally{button.disabled=false;}});
 $('dismiss-form').addEventListener('submit',dismissIssue);
 ['priority','repo','sort'].forEach(filter=> $(`${filter}-filter`).addEventListener('change',event=>{state.filters[filter]=event.target.value;state.limit=20;renderQueue();}));
@@ -504,6 +533,7 @@ document.addEventListener('click',async event=>{
     if(button.hasAttribute('data-scan'))await scan();
     if(button.hasAttribute('data-retry'))await init();
     if(button.hasAttribute('data-more')){state.limit=state.items.length;renderQueue();}
+    if(button.hasAttribute('data-more-repos')){state.repoLimit=repositoryChoices().length;renderRepos();}
     if(button.dataset.status){state.filters.status=button.dataset.status;state.limit=20;renderQueue();}
     if(button.hasAttribute('data-clear-filters')){state.filters={status:'Open',repo:'',priority:'',search:'',sort:'fit'};['priority','repo'].forEach(id=>$(`${id}-filter`).value='');$('sort-filter').value='fit';$('search-input').value='';renderQueue();}
     if(button.hasAttribute('data-remove-step')){state.draft.steps.splice(Number(button.dataset.removeStep),1);setDirty();renderPlan();}
@@ -512,7 +542,8 @@ document.addEventListener('click',async event=>{
     if(button.dataset.watch){button.disabled=true;try{await watchRepo(button.dataset.watch);}catch(error){button.disabled=false;throw error;}}
     if(button.dataset.toggleRepo)await toggleRepo(button.dataset.toggleRepo,button);
     if(button.dataset.removeRepo)await removeRepo(button.dataset.removeRepo);
-    if(button.dataset.repoMatches){state.filters.repo=button.dataset.repoMatches;state.filters.status='Open';renderQueue();navigate('#queue');}
+    if(button.dataset.repoMatches)openRepoQueue(button.dataset.repoMatches);
+    if(button.dataset.chooseRepo)await chooseRepo(button.dataset.chooseRepo);
     if(button.hasAttribute('data-area')){state.area=button.dataset.area;renderDirectory();}
     if(button.dataset.runLog){const run=state.health.recentRuns?.find(run=>run.id===button.dataset.runLog);info('Scan details',`<pre>${escapeHtml(JSON.stringify(run,null,2))}</pre>`);}
     if(button.hasAttribute('data-schedule'))info('Scan schedule',`<p>${escapeHtml(scheduleText())}.</p><p class="muted">Scheduled runs are managed by this deployment. Manual scans are available from Queue and Scans.</p>`);

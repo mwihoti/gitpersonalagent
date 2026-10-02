@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Review open-source issues, plan your contributions, and follow your pull requests.">
   <title>Queue · dan/queue</title>
-  <link rel="stylesheet" href="/styles.css?v=queue-3">
+  <link rel="stylesheet" href="/styles.css?v=queue-4">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to workspace</a>
@@ -95,6 +95,10 @@
       </section>
 
       <section id="repos-view" class="view hidden" aria-label="Repositories">
+        <div class="repo-picker-bar">
+          <label for="repo-picker">Choose a repository<span class="muted">Open its saved issues, or check a new project.</span></label>
+          <select id="repo-picker"><option value="">Select a repository…</option></select>
+        </div>
         <div class="repo-inspection">
           <div class="repo-check-form">
             <h2>Check a repo before watching it</h2>
@@ -106,6 +110,7 @@
           <div id="repo-inspection-result" class="inspection-result"><div class="empty-state"><strong>Check a repository</strong><p>Its open issues and top matches will appear here.</p></div></div>
         </div>
         <div id="watched-repos" class="table-scroll"></div>
+        <div id="repos-pagination" class="table-footer"></div>
         <details class="project-directory"><summary>Browse Bitcoin projects</summary><div class="directory-body"><div id="project-filters" class="project-filters"></div><div id="project-directory" class="project-grid"></div></div></details>
       </section>
 
@@ -135,7 +140,7 @@
   <dialog id="leave-dialog" class="dialog"><h2>Unsaved changes</h2><p class="muted">Save your plan and notes before leaving this issue.</p><div class="dialog-actions"><button id="stay-button" class="button button-secondary" type="button">Keep editing</button><button id="discard-button" class="button button-secondary" type="button">Discard changes</button><button id="save-leave-button" class="button" type="button">Save and leave</button></div></dialog>
   <dialog id="reset-dialog" class="dialog"><h2>Reset ranking adjustments?</h2><p class="muted">Keep your issues and activity history. New contribution outcomes will build fresh preferences.</p><div class="dialog-actions"><button class="button button-secondary" type="button" data-close-dialog>Cancel</button><button id="confirm-reset-button" class="button" type="button">Reset adjustments</button></div></dialog>
   <div id="toast" class="toast hidden" role="status"><span id="toast-text"></span><button id="undo-button" class="text-button hidden" type="button">Undo</button><button id="toast-close" class="toast-close" aria-label="Dismiss notification" type="button">×</button></div>
-  <script src="/queue-model.js?v=queue-3"></script>
-  <script src="/app.js?v=queue-3"></script>
+  <script src="/queue-model.js?v=queue-4"></script>
+  <script src="/app.js?v=queue-4"></script>
 </body>
 </html>
