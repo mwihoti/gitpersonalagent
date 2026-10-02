@@ -103,3 +103,39 @@ test('getScanRepositories falls back to BitcoinDevs when watchlist is empty', as
   const repos = await repositories.getScanRepositories();
   assert.deepEqual(repos, ['bitcoin/bitcoin', 'payjoin/rust-payjoin']);
 });
+
+test('pausing repositories persists and excludes them without falling back to discovery', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({}) });
+  t.after(() => { global.fetch = originalFetch; });
+  const repositories = await loadRepositoriesModule(t);
+  const first = await repositories.addRepository('bitcoin/bitcoin');
+  const second = await repositories.addRepository('rust-bitcoin/rust-bitcoin');
+  assert.equal(first.enabled, true);
+  await repositories.updateRepository(first.id, { enabled: false });
+  assert.deepEqual(await repositories.getScanRepositories(), [second.repo]);
+  await repositories.updateRepository(second.id, { enabled: false });
+  global.fetch = async () => { throw new Error('Paused watchlists must not fetch discovery'); };
+  assert.deepEqual(await repositories.getScanRepositories(), []);
+  assert.ok((await repositories.listRepositories()).every(repo => !repo.enabled));
+  await repositories.updateRepository(first.id, { enabled: true });
+  assert.deepEqual(await repositories.getScanRepositories(), [first.repo]);
+  await assert.rejects(repositories.updateRepository(first.id, { enabled: 'false' }), /boolean/);
+});
+
+test('concurrent repository changes preserve additions and pause state', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({}) });
+  t.after(() => { global.fetch = originalFetch; });
+  const repositories = await loadRepositoriesModule(t);
+  const first = await repositories.addRepository('bitcoin/bitcoin');
+  await Promise.all([
+    repositories.updateRepository(first.id, { enabled: false }),
+    repositories.addRepository('rust-bitcoin/rust-bitcoin'),
+    repositories.addRepository('bitcoindevkit/bdk'),
+  ]);
+  const all = await repositories.listRepositories();
+  assert.equal(all.length, 3);
+  assert.equal(all.find(repo => repo.id === first.id).enabled, false);
+  assert.equal(new Set(all.map(repo => repo.id)).size, 3);
+});

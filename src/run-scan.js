@@ -393,8 +393,9 @@ async function runScan(options = {}) {
     run.discoverySourceUrl = targets.sourceUrl || '';
     run.discoveryIssues = (targets.issues || []).length;
     run.repositories = repos.length;
+    run.repositoryNames = repos;
     if (!repos.length) {
-      throw new Error('No repositories configured and BitcoinDevs discovery returned no repos. Add a dashboard watchlist repo or check BITCOINDEVS_ISSUES_URL.');
+      throw new Error('No repositories are enabled for scanning. Add or enable a repository in Repos, or check your discovery settings.');
     }
 
     logger.log('\n1/3 Scanning GitHub repos + news...');

@@ -10,6 +10,7 @@
 
 const OUTCOME_WEIGHTS = {
   merged: 3,
+  completed: 1.5,
   pr_opened: 2,
   claimed: 1.5,
   dismissed: -2,
@@ -42,8 +43,9 @@ function parseLabels(value) {
 function deriveOutcome(record, now = Date.now()) {
   const log = String(record.activityLog || '');
   const status = String(record.status || '');
-  const dismissMatch = log.match(/dismissed(?: by [^\n(]+)?(?:\s*\((?<reason>[^)]+)\))?/i);
-  const reasonMatch = log.match(/\[dismiss reason:\s*(?<reason>[^\]]+)\]/i);
+  const dismissMatch = [...log.matchAll(/dismissed(?: by [^\n(]+)?(?:\s*\((?<reason>[^)]+)\))?/gi)].at(-1);
+  const reasonMatch = [...log.matchAll(/\[dismiss reason:\s*(?<reason>[^\]]+)\]/gi)].at(-1);
+  const latestOutcome = [...log.matchAll(/\[outcome ([^\]]+)\]/gi)].at(-1)?.[1];
 
   if (/\[outcome merged\]/i.test(log) || /\bmerged\b/i.test(status)) {
     return { outcome: 'merged', reason: '' };
@@ -52,7 +54,11 @@ function deriveOutcome(record, now = Date.now()) {
   if (/\[outcome (?:archived|closed-upstream)\]/i.test(log)) {
     return { outcome: 'archived', reason: '' };
   }
-  if (reasonMatch || (dismissMatch && /done|closed|dropped|skip/i.test(status))) {
+  if (latestOutcome === 'completed' && /done|complete/i.test(status)) {
+    // Marking work done does not prove a linked pull request has merged.
+    return { outcome: 'completed', reason: '' };
+  }
+  if ((reasonMatch || dismissMatch) && /done|closed|dropped|skip|dismiss/i.test(status)) {
     const reason = normalizeKey((reasonMatch && reasonMatch.groups.reason) || (dismissMatch && dismissMatch.groups && dismissMatch.groups.reason) || '');
     return { outcome: 'dismissed', reason };
   }
@@ -86,11 +92,15 @@ function buildPreferenceModel(records = [], options = {}) {
   const efforts = new Map();
   const sources = new Map();
   const languages = new Map();
-  const counts = { merged: 0, pr_opened: 0, claimed: 0, dismissed: 0, ignored: 0, archived: 0, pending: 0 };
+  const counts = { merged: 0, completed: 0, pr_opened: 0, claimed: 0, dismissed: 0, ignored: 0, archived: 0, pending: 0 };
   const dismissReasons = new Map();
 
   for (const record of records) {
     const { outcome, reason } = deriveOutcome(record, now);
+    // A reset records the outcome already learned from each issue. Only a new
+    // outcome after that baseline contributes weight; activity history stays intact.
+    const baseline = [...String(record.activityLog || '').matchAll(/\[ranking baseline: ([^\]]+)\]/g)].at(-1);
+    if (baseline && baseline[1] === `${outcome}|${reason}`) continue;
     counts[outcome] = (counts[outcome] || 0) + 1;
     const weight = OUTCOME_WEIGHTS[outcome] || 0;
     if (!weight) continue;
@@ -112,7 +122,7 @@ function buildPreferenceModel(records = [], options = {}) {
     }
   }
 
-  const positive = counts.merged + counts.pr_opened + counts.claimed;
+  const positive = counts.merged + counts.completed + counts.pr_opened + counts.claimed;
   const negative = counts.dismissed;
   return {
     repos,
@@ -197,7 +207,7 @@ function summarizePreferences(model) {
   if (!model || !model.sampleSize) return '';
   const c = model.counts;
   const lines = [
-    `Track record: ${c.merged} merged, ${c.pr_opened} PRs open, ${c.claimed} claimed, ${c.dismissed} dismissed, ${c.ignored} ignored.`,
+    `Track record: ${c.merged} merged, ${c.completed} completed, ${c.pr_opened} PRs open, ${c.claimed} claimed, ${c.dismissed} dismissed, ${c.ignored} ignored.`,
   ];
   const likedRepos = topEntries(model.repos, 1);
   const avoidRepos = topEntries(model.repos, -1);

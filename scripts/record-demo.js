@@ -211,55 +211,57 @@ async function boxCenter(page, selector, nth = 0) {
   await hold(3.2);
 
   // ── 2. The dashboard ───────────────────────────────────────────────────
-  await goto(BASE + '/');
+  await goto(BASE + '/#repos');
+  await page.waitForSelector('#project-filters button');
   await caption(null, 'One dashboard. 42 Bitcoin projects, 11 areas.');
   await hold(2.6);
 
   // ── 3. Pick an area ────────────────────────────────────────────────────
+  await moveAndClick('.project-directory > summary');
   const panelY = await page.evaluate(() =>
-    document.querySelector('.ecosystem-panel').getBoundingClientRect().top + window.scrollY - 70);
+    Math.max(0, document.querySelector('.project-directory').getBoundingClientRect().top + window.scrollY - 70));
   await caption('Start here', 'Start from the part of Bitcoin you want to work in.');
   await hold(1.4, async t => { await scrollTo(lerp(0, panelY, easeInOut(t))); });
   await hold(0.9);
 
   // Chips: All areas, Consensus, Lightning, Wallets, Libraries, Privacy, ...
   await caption('Start here', 'Lightning — nine projects, from LND to the BOLT specs.');
-  await moveAndClick('.ecosystem-chip', 2);
+  await moveAndClick('#project-filters button', 2);
   await hold(1.9);
 
   await caption('Start here', 'Privacy, ecash, mining, design — each its own corner.');
-  await moveAndClick('.ecosystem-chip', 7);
+  await moveAndClick('#project-filters button', 7);
   await hold(1.7);
 
-  await moveAndClick('.ecosystem-chip', 1);
+  await moveAndClick('#project-filters button', 1);
   await hold(1.7);
 
-  await caption('Start here', 'The tag is Bitcoin context needed — not difficulty.');
-  await moveAndClick('.ecosystem-chip', 5);
+  await caption('Start here', 'Compare project descriptions and their primary languages.');
+  await moveAndClick('#project-filters button', 5);
   await hold(2.3);
 
   // ── 4. Add to watchlist ────────────────────────────────────────────────
   await caption('Start here', 'Add one and every scan starts tracking its issues.');
-  await moveAndClick('.ecosystem-add', 0, { seconds: 0.6 });
+  await moveAndClick('#project-directory [data-watch]:not([disabled])', 0, { seconds: 0.6 });
   await hold(2.4);
 
   // ── 5. The queue, from real issues ─────────────────────────────────────
-  const queueY = await page.evaluate(() =>
-    document.querySelector('.filters-panel').getBoundingClientRect().top + window.scrollY - 60);
+  await moveAndClick('[data-view="queue"]');
+  const queueY = 0;
   const fromY = await page.evaluate(() => window.scrollY);
   await caption(null, 'This morning: real open issues, ranked and filtered.');
   await hold(1.6, async t => { await scrollTo(lerp(fromY, queueY, easeInOut(t))); });
   await hold(2.6);
 
-  await caption(null, 'Assigned issues and ones with an open PR never reach here.');
+  await caption(null, 'Open work stays separate from finished and dismissed issues.');
   await hold(2.8, async t => { await scrollTo(queueY + easeInOut(t) * 200); });
 
   // ── 6. One issue ───────────────────────────────────────────────────────
   await caption(null, 'Open one for the plan, the files, and the questions to ask.');
-  await moveAndClick('.list-item', 1, { seconds: 0.6 });
+  await moveAndClick('.issue-link', 1, { seconds: 0.6 });
   await hold(1.0);
   const detY = await page.evaluate(() => {
-    const el = document.querySelector('.detail-panel') || document.querySelector('#detail-form');
+    const el = document.querySelector('#detail-form');
     return el ? el.getBoundingClientRect().top + window.scrollY - 60 : window.scrollY;
   });
   const beforeDet = await page.evaluate(() => window.scrollY);

@@ -62,7 +62,7 @@ Three things use the catalogue:
    standout issue elsewhere still surfaces. An area merely *guessed* from a repo
    name counts for half as much as one in the catalogue.
 3. **Browsing.** `/projects`, `/areas` and `/issues` in Telegram, and the
-   "Start here" panel on the dashboard.
+   project directory under Repos on the dashboard.
 
 To add a project, append an entry to `BITCOIN_PROJECTS` and run `npm test` — the
 suite checks the shape, rejects duplicates, and fails if an area ends up empty.
@@ -486,7 +486,8 @@ sharpen the signal: "too big" penalises that effort level, "not my stack"
 penalises that language. The learned weights nudge the fit score (capped at
 ±12 per factor, scaled by how much evidence exists) and the digest model gets a
 one-paragraph contributor profile ("ships in rust-payjoin, dismisses docs
-issues"). The dashboard's Learning loop card shows what the ranker has learned.
+issues"). The Scans page shows what the ranker has learned. Reset adjustments
+keeps activity history and starts learning from subsequent outcomes.
 Optional Airtable columns `Labels` and `Language` make label and language
 learning possible; without them repo and effort learning still work.
 
@@ -652,9 +653,23 @@ If `DAN_AGENT_API_KEY` is set, the dashboard prompts for it once and sends it on
 
 Manage repositories from the dashboard:
 
-1. Open the app
-2. Add `owner/repo` or a GitHub repo URL in the watchlist form
-3. Use `Run scan now` or let the daily schedule use the saved watchlist
+1. Open **Repos** and check an `owner/repo` or GitHub URL before watching it.
+2. Add it to the watchlist, or browse the Bitcoin project directory.
+3. Use **Scan now** from Queue or Scans, or let the daily schedule run.
+
+The watchlist switch pauses a repository without removing it or its saved
+issues. If every watched repository is paused, scans stop until one is enabled.
+**View schedule** shows the deployment's schedule; changes are managed through
+the deployment configuration.
+
+**Queue** has status tabs, repository and priority filters, search, and fit or
+activity sorting. Open an issue for its saved ranking reasons, a checklist plan,
+code, metadata, and activity notes. Save persists checklist completion. Dismiss
+asks for a reason and offers Undo; it stays separate from Done. Returning to
+Queue preserves filters and scroll position, and unsaved edits prompt before
+leaving.
+
+**Scans** shows run history, failed runs with logs and retry, and ranking feedback.
 
 If no repositories are saved, scans fall back in order:
 
@@ -664,8 +679,8 @@ If no repositories are saved, scans fall back in order:
    scan is never a no-op. Spread across areas rather than taking the first N, and
    filtered by `BITCOIN_FOCUS_AREAS` and `PREFERRED_LANGUAGES` when set.
 
-Each dashboard opportunity shows its source, its ecosystem area, and its local
-fit score.
+Each queue row shows its fit score. Saved source details and analysis evidence
+are available on the issue page.
 
 ---
 

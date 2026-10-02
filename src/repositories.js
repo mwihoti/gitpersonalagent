@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs/promises');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const { fetchBitcoinDevsIssues, saveBitcoinDevsDiscovery } = require('./bitcoindevs');
 const { seedRepositories } = require('./bitcoin-ecosystem');
 const { assertRepositoryAccessible } = require('./github');
@@ -9,6 +10,13 @@ const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
   ? path.join('/tmp', 'danagent-data')
   : path.join(__dirname, '..', 'data'));
 const LOCAL_REPOS_FILE = path.join(LOCAL_DATA_DIR, 'repositories.json');
+let writeQueue = Promise.resolve();
+
+function mutateRepositories(task) {
+  const next = writeQueue.then(task, task);
+  writeQueue = next.catch(() => {});
+  return next;
+}
 
 function normalizeRepo(input) {
   const trimmed = String(input || '').trim();
@@ -45,6 +53,7 @@ function shapeRepository(repo, index) {
     id: repo.id || `repo-${index}-${Buffer.from(repo.repo).toString('base64url').slice(0, 12)}`,
     repo: repo.repo,
     addedAt: repo.addedAt || '',
+    enabled: repo.enabled !== false,
   };
 }
 
@@ -61,31 +70,49 @@ async function addRepository(input) {
     throw new Error('Enter a valid GitHub repo URL or owner/repo value.');
   }
 
-  const rows = await readRepoStore();
-  const exists = rows.find(row => String(row.repo).toLowerCase() === repo.toLowerCase());
-  if (exists) {
-    return shapeRepository(exists);
-  }
+  return mutateRepositories(async () => {
+    const rows = await readRepoStore();
+    const exists = rows.find(row => String(row.repo).toLowerCase() === repo.toLowerCase());
+    if (exists) {
+      return shapeRepository(exists);
+    }
 
-  await assertRepositoryAccessible(repo);
+    await assertRepositoryAccessible(repo);
 
-  const record = {
-    id: `repo-${Date.now()}`,
-    repo,
-    addedAt: new Date().toISOString(),
-  };
-  rows.push(record);
-  await writeRepoStore(rows);
-  return shapeRepository(record);
+    const record = {
+      id: `repo-${randomUUID()}`,
+      repo,
+      addedAt: new Date().toISOString(),
+    };
+    rows.push(record);
+    await writeRepoStore(rows);
+    return shapeRepository(record);
+  });
 }
 
 async function removeRepository(id) {
-  const rows = await readRepoStore();
-  const next = rows.filter(row => row.id !== id);
-  if (next.length === rows.length) {
-    throw new Error(`Repository not found: ${id}`);
+  return mutateRepositories(async () => {
+    const rows = await readRepoStore();
+    const next = rows.filter(row => row.id !== id);
+    if (next.length === rows.length) {
+      throw new Error(`Repository not found: ${id}`);
+    }
+    await writeRepoStore(next);
+  });
+}
+
+async function updateRepository(id, updates = {}) {
+  if (typeof updates.enabled !== 'boolean') {
+    throw new Error('enabled must be a boolean');
   }
-  await writeRepoStore(next);
+  return mutateRepositories(async () => {
+    const rows = await readRepoStore();
+    const index = rows.findIndex(row => row.id === id);
+    if (index < 0) throw new Error(`Repository not found: ${id}`);
+    rows[index].enabled = updates.enabled;
+    await writeRepoStore(rows);
+    return shapeRepository(rows[index], index);
+  });
 }
 
 function isBitcoinDevsDiscoveryEnabled() {
@@ -99,8 +126,8 @@ async function getScanRepositories() {
 
 async function getScanTargets() {
   const repos = await listRepositories();
-  const savedRepos = repos.map(entry => entry.repo);
-  if (savedRepos.length || !isBitcoinDevsDiscoveryEnabled()) {
+  const savedRepos = repos.filter(entry => entry.enabled).map(entry => entry.repo);
+  if (repos.length || !isBitcoinDevsDiscoveryEnabled()) {
     return {
       source: savedRepos.length ? 'watchlist' : 'none',
       sourceUrl: '',
@@ -156,4 +183,5 @@ module.exports = {
   listRepositories,
   normalizeRepo,
   removeRepository,
+  updateRepository,
 };

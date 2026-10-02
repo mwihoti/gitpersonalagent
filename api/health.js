@@ -6,6 +6,7 @@ const { isDispatchConfigured } = require('../src/scan-dispatch');
 const { listBots } = require('../src/bots');
 const { sendJson } = require('../src/http');
 const { describeProviders } = require('../src/providers');
+const config = require('../src/config');
 
 // Which settings this deployment actually received. Booleans and counts only —
 // never a secret's value — so it is safe on the public health endpoint and
@@ -34,7 +35,8 @@ module.exports = async function handler(_req, res) {
     config: configStatus(),
     timestamp: new Date().toISOString(),
     currentRun: getCurrentRun(),
-    recentRuns: recentRuns.slice(0, 5),
+    recentRuns: recentRuns.slice(0, 30),
+    schedule: { cron: process.env.VERCEL ? '0 5 * * *' : config.schedule, timezone: process.env.VERCEL ? 'UTC' : 'Africa/Nairobi', managed: true },
     recentDiscoveries: discoveries.slice(0, 3),
   });
 };

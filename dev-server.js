@@ -14,6 +14,7 @@ const issueAnalysisHandler = require('./api/issue-analysis');
 const issueStatusHandler = require('./api/issue-status');
 const setupWebhookHandler = require('./api/setup-webhook');
 const bitcoinProjectsHandler = require('./api/bitcoin-projects');
+const preferencesHandler = require('./api/preferences');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);
@@ -72,6 +73,9 @@ async function routeApi(req, res, pathname, query) {
   }
   if (pathname === '/api/bitcoin-projects') {
     return bitcoinProjectsHandler(req, res);
+  }
+  if (pathname === '/api/preferences') {
+    return preferencesHandler(req, res);
   }
   if (pathname === '/api/repositories') {
     return repositoriesHandler(req, res);

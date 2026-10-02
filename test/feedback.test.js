@@ -74,3 +74,26 @@ test('applyPreferences nudges scores within bounds and re-sorts', () => {
   assert.equal(scoreAdjustment(null, {}).delta, 0);
   assert.deepEqual(applyPreferences([{ repo: 'x', issues: [] }], buildPreferenceModel([])), [{ repo: 'x', issues: [] }]);
 });
+
+test('restored dismissals can be claimed and completed without retaining a dismissal outcome', () => {
+  const log = 'Dismissed [dismiss reason: too big] [outcome dismissed]';
+  assert.equal(deriveOutcome(record({ activityLog: log }), NOW).outcome, 'pending');
+  assert.equal(deriveOutcome(record({ status: 'In Progress', activityLog: log }), NOW).outcome, 'claimed');
+  const completed = record({ status: 'Done', activityLog: `${log}\nMarked done [outcome completed]` });
+  assert.equal(deriveOutcome(completed, NOW).outcome, 'completed');
+  assert.equal(deriveOutcome({ ...completed, prUrl: 'https://github.com/a/b/pull/1' }, NOW).outcome, 'completed');
+  assert.equal(buildPreferenceModel([completed], { now: NOW }).counts.dismissed, 0);
+});
+
+test('a ranking baseline resets old weights but learns subsequent outcomes', () => {
+  const dismissed = record({ status: 'Done', activityLog: 'Dismissed [dismiss reason: too big]\n[ranking baseline: dismissed|too big]' });
+  const pending = record({ activityLog: '[ranking baseline: pending|]' });
+  const reset = buildPreferenceModel([dismissed, pending], { now: NOW });
+  assert.equal(reset.sampleSize, 0);
+  assert.equal(reset.repos.size, 0);
+  assert.equal(reset.dismissReasons.size, 0);
+  const newOutcome = buildPreferenceModel([dismissed, { ...pending, status: 'In Progress' }], { now: NOW });
+  assert.equal(newOutcome.sampleSize, 1);
+  assert.equal(newOutcome.counts.claimed, 1);
+  assert.ok(newOutcome.repos.get(pending.repo) > 0);
+});

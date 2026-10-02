@@ -1,603 +1,523 @@
+'use strict';
+const Q = window.QueueModel;
+const $ = id => document.getElementById(id);
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[character]));
+const safeUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; } catch { return ''; } };
+const createTag = (label, className = '') => `<span class="tag ${className}">${label}</span>`;
 const state = {
-  opportunities: [],
-  filtered: [],
-  repositories: [],
-  selectedId: null,
-  storage: 'loading',
-  currentPage: 1,
-  pageSize: 20,
-  apiKey: window.sessionStorage.getItem('danagent.apiKey') || '',
-  ecosystem: { areas: [], projects: [], activeArea: '' },
+  items: [], repos: [], health: {}, learning: null, catalog: null, area: '', inspection: null,
+  filters: { status: 'Open', repo: '', priority: '', search: '', sort: 'fit' }, limit: 20,
+  view: 'queue', selected: null, draft: null, dirty: false, saving: false, running: false,
+  loaded: false, queueScroll: 0, route: '', pendingRoute: null, undo: null,
+  key: sessionStorage.getItem('danagent.apiKey') || '', accessPromise: null, accessResolve: null,
 };
+const statuses = ['Open', 'New', 'In Progress', 'Done', 'Dismissed', 'Closed'];
 
-const els = {
-  list: document.getElementById('opportunities-list'),
-  statusFilter: document.getElementById('status-filter'),
-  priorityFilter: document.getElementById('priority-filter'),
-  searchInput: document.getElementById('search-input'),
-  metricTotal: document.getElementById('metric-total'),
-  metricProgress: document.getElementById('metric-progress'),
-  metricDone: document.getElementById('metric-done'),
-  metricHigh: document.getElementById('metric-high'),
-  storageBadge: document.getElementById('storage-badge'),
-  currentRunBadge: document.getElementById('current-run-badge'),
-  lastRunSummary: document.getElementById('last-run-summary'),
-  recentRunsList: document.getElementById('recent-runs-list'),
-  runScanButton: document.getElementById('run-scan-button'),
-  scanStatus: document.getElementById('scan-status'),
-  detailEmpty: document.getElementById('detail-empty'),
-  detailForm: document.getElementById('detail-form'),
-  detailRepo: document.getElementById('detail-repo'),
-  detailSource: document.getElementById('detail-source'),
-  detailTitle: document.getElementById('detail-title'),
-  detailIssueLink: document.getElementById('detail-issue-link'),
-  detailStatus: document.getElementById('detail-status'),
-  detailPriority: document.getElementById('detail-priority'),
-  detailOwner: document.getElementById('detail-owner'),
-  detailDueDate: document.getElementById('detail-due-date'),
-  detailNextStep: document.getElementById('detail-next-step'),
-  detailPrUrl: document.getElementById('detail-pr-url'),
-  detailActivityLog: document.getElementById('detail-activity-log'),
-  detailQuickPlan: document.getElementById('detail-quick-plan'),
-  detailQualifies: document.getElementById('detail-qualifies'),
-  detailAction: document.getElementById('detail-action'),
-  detailMatters: document.getElementById('detail-matters'),
-  detailTip: document.getElementById('detail-tip'),
-  detailCode: document.getElementById('detail-code'),
-  detailAnalyzeButton: document.getElementById('detail-analyze-button'),
-  detailLive: document.getElementById('detail-live'),
-  learningBadge: document.getElementById('learning-badge'),
-  learningSummary: document.getElementById('learning-summary'),
-  learningTags: document.getElementById('learning-tags'),
-  detailAnalysis: document.getElementById('detail-analysis'),
-  saveStatus: document.getElementById('save-status'),
-  paginationSummary: document.getElementById('pagination-summary'),
-  prevPageButton: document.getElementById('prev-page-button'),
-  nextPageButton: document.getElementById('next-page-button'),
-  repoForm: document.getElementById('repo-form'),
-  repoInput: document.getElementById('repo-input'),
-  repoStatus: document.getElementById('repo-status'),
-  watchlistForm: document.getElementById('watchlist-form'),
-  watchlistInput: document.getElementById('watchlist-input'),
-  watchlistStatus: document.getElementById('watchlist-status'),
-  watchlistList: document.getElementById('watchlist-list'),
-  repoResults: document.getElementById('repo-results'),
-  repoResultsName: document.getElementById('repo-results-name'),
-  repoResultsCount: document.getElementById('repo-results-count'),
-  repoIssuesList: document.getElementById('repo-issues-list'),
-  ecosystemStatus: document.getElementById('ecosystem-status'),
-  ecosystemAreas: document.getElementById('ecosystem-areas'),
-  ecosystemProjects: document.getElementById('ecosystem-projects'),
-};
-
-// ── Bitcoin ecosystem starter ───────────────────────────────────────────
-//
-// The first thing a new contributor sees. /api/bitcoin-projects is static and
-// unauthenticated, so this panel fills in even before a dashboard key is
-// entered — someone can browse the ecosystem without credentials.
-
-function renderEcosystemAreas() {
-  const areas = state.ecosystem.areas.filter(area => area.projectCount > 0);
-  els.ecosystemAreas.innerHTML = [
-    { area: '', label: 'All areas', projectCount: state.ecosystem.projects.length },
-    ...areas,
-  ].map(area => `
-    <button type="button" class="ecosystem-chip${state.ecosystem.activeArea === area.area ? ' is-active' : ''}"
-            data-area="${escapeHtml(area.area)}" aria-pressed="${state.ecosystem.activeArea === area.area}" title="${escapeHtml(area.blurb || '')}">
-      ${escapeHtml(area.label)}<span>${area.projectCount}</span>
-    </button>
-  `).join('');
-
-  els.ecosystemAreas.querySelectorAll('.ecosystem-chip').forEach(node => {
-    node.addEventListener('click', () => {
-      state.ecosystem.activeArea = node.dataset.area;
-      renderEcosystemAreas();
-      renderEcosystemProjects();
-    });
-  });
+function shortDate(value, includeTime = false) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  const today = new Date().toDateString() === date.toDateString();
+  const yesterday = new Date(Date.now() - 86400000).toDateString() === date.toDateString();
+  const day = today ? 'Today' : yesterday ? 'Yesterday' : date.toLocaleDateString(undefined, { day:'numeric', month:'short' });
+  return includeTime ? `${day}, ${date.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' })}` : day;
 }
-
-function renderEcosystemProjects() {
-  const { activeArea, projects } = state.ecosystem;
-  const watched = new Set(state.repositories.map(item => String(item.repo).toLowerCase()));
-  const visible = activeArea
-    ? projects.filter(project => project.area === activeArea)
-    : projects;
-
-  if (!visible.length) {
-    els.ecosystemProjects.innerHTML = '<div class="detail-empty">No projects in this area yet.</div>';
-    return;
-  }
-
-  els.ecosystemProjects.innerHTML = visible.map(project => {
-    const isWatched = watched.has(project.repo.toLowerCase());
-    return `
-      <article class="ecosystem-card">
-        <div class="ecosystem-card-head">
-          <a href="https://github.com/${escapeHtml(project.repo)}" target="_blank" rel="noreferrer">${escapeHtml(project.repo)}</a>
-          <span class="ecosystem-level level-${escapeHtml(project.level)}">${escapeHtml({ newcomer: 'Newcomer friendly', intermediate: 'Some experience', deep: 'Protocol experience' }[project.level] || project.level)}</span>
-        </div>
-        <p>${escapeHtml(project.blurb)}</p>
-        <div class="ecosystem-card-foot">
-          <span class="ecosystem-lang">${escapeHtml(project.language)}</span>
-          <button type="button" class="button button-secondary ecosystem-add"
-                  data-repo="${escapeHtml(project.repo)}" ${isWatched ? 'disabled' : ''}>
-            ${isWatched ? 'Watching' : 'Add to watchlist'}
-          </button>
-        </div>
-      </article>
-    `;
-  }).join('');
-
-  els.ecosystemProjects.querySelectorAll('.ecosystem-add').forEach(node => {
-    node.addEventListener('click', () => {
-      addEcosystemProject(node).catch(error => {
-        els.ecosystemStatus.textContent = error.message;
-      });
-    });
-  });
+function age(value) {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return '—';
+  const hours = Math.max(0, Math.floor((Date.now() - time) / 3600000));
+  return hours < 24 ? `${hours} h` : hours < 168 ? `${Math.floor(hours / 24)} d` : `${Math.floor(hours / 168)} w`;
 }
-
-async function addEcosystemProject(button) {
-  const repo = button.dataset.repo;
-  button.disabled = true;
-  button.textContent = 'Adding…';
-  els.ecosystemStatus.textContent = `Adding ${repo}…`;
-  try {
-    const res = await authorizedFetch('/api/repositories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo }),
-    });
-    if (!res.ok) throw new Error(await readErrorResponse(res));
-    await loadRepositories();
-    els.ecosystemStatus.textContent = `${repo} added to your watchlist.`;
-    renderEcosystemProjects();
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = 'Add to watchlist';
-    throw error;
-  }
+function scoreHtml(item, bar = true) {
+  const n = Q.score(item);
+  return `<span class="score-cell"><span class="score-value${n >= 80 ? ' high' : ''}">${n || '—'}</span>${bar ? `<span class="score-track" aria-hidden="true"><span style="width:${n}%"></span></span>` : ''}</span>`;
 }
-
-async function loadBitcoinProjects() {
-  const res = await fetch('/api/bitcoin-projects');
-  if (!res.ok) throw new Error(await readErrorResponse(res));
-  const payload = await res.json();
-  state.ecosystem.areas = payload.areas || [];
-  state.ecosystem.projects = payload.projects || [];
-  els.ecosystemStatus.textContent = `${state.ecosystem.projects.length} projects across ${state.ecosystem.areas.filter(a => a.projectCount).length} areas`;
-  renderEcosystemAreas();
-  renderEcosystemProjects();
+function ref(item) { const match = String(item.issueUrl || '').match(/\/(?:issues|pull)\/(\d+)/); return `${item.repo || 'Repository'}${match ? ` #${match[1]}` : ''}`; }
+function labelHtml(label) { return createTag(escapeHtml(label), /bug/i.test(label) ? 'tag-bug' : /good first|help wanted/i.test(label) ? 'tag-good' : ''); }
+function showNotice(message = '', error = false) { $('page-notice').textContent = message; $('page-notice').classList.toggle('hidden', !message); $('page-notice').classList.toggle('is-error', error); }
+let toastTimer;
+function toast(message, undo = null) {
+  clearTimeout(toastTimer);
+  state.undo = undo;
+  $('toast-text').textContent = message;
+  $('undo-button').classList.toggle('hidden', !undo);
+  $('toast').classList.remove('hidden');
+  if (!undo) toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 6000);
 }
+function info(title, html) { $('info-title').textContent = title; $('info-content').innerHTML = html; $('info-dialog').showModal(); }
 
-function renderRepositories() {
-  if (!state.repositories.length) {
-    els.watchlistList.innerHTML = '<div class="detail-empty"><strong>No repositories yet</strong><p>Add a repository above or <a href="#projects">browse Bitcoin projects</a>. With an empty watchlist, scans use BitcoinDevs and the project directory.</p></div>';
-    syncEcosystemWatchState();
-    return;
-  }
-
-  els.watchlistList.innerHTML = state.repositories.map(item => `
-    <article class="watchlist-item">
-      <div>
-        <strong>${escapeHtml(item.repo)}</strong>
-        <p>${escapeHtml(item.addedAt ? `Added ${new Date(item.addedAt).toLocaleString()}` : 'Ready for scheduled scans')}</p>
-      </div>
-      <div class="watchlist-actions">
-        <button type="button" class="button button-secondary watchlist-inspect" data-repo="${escapeHtml(item.repo)}">Inspect</button>
-        <button type="button" class="button button-secondary watchlist-remove" data-id="${escapeHtml(item.id)}">Remove</button>
-      </div>
-    </article>
-  `).join('');
-
-  syncEcosystemWatchState();
-
-  els.watchlistList.querySelectorAll('.watchlist-inspect').forEach(node => {
-    node.addEventListener('click', () => {
-      inspectRepository(node.dataset.repo).catch(error => {
-        els.repoStatus.textContent = error.message;
-      });
-    });
-  });
-
-  els.watchlistList.querySelectorAll('.watchlist-remove').forEach(node => {
-    node.addEventListener('click', () => {
-      removeRepository(node.dataset.id).catch(error => {
-        els.watchlistStatus.textContent = error.message;
-      });
-    });
-  });
+function requestKey() {
+  if (state.accessPromise) return state.accessPromise;
+  $('access-error').textContent = '';
+  $('access-key').value = state.key;
+  $('access-dialog').returnValue = '';
+  $('access-dialog').showModal();
+  state.accessPromise = new Promise(resolve => { state.accessResolve = resolve; });
+  return state.accessPromise;
 }
-
-// Adding or removing a repo anywhere changes which ecosystem cards read
-// "Watching", so keep the starter panel in step.
-function syncEcosystemWatchState() {
-  if (state.ecosystem.projects.length) renderEcosystemProjects();
-}
-
-function normalizeText(value) {
-  return String(value || '').toLowerCase();
-}
-
-function getVisibleOpportunities() {
-  if (!state.repositories.length) {
-    return state.opportunities;
-  }
-
-  const watchedRepos = new Set(state.repositories.map(item => normalizeText(item.repo)));
-  return state.opportunities.filter(item => watchedRepos.has(normalizeText(item.repo)));
-}
-
-function renderLearning(learning) {
-  if (!learning || !learning.sampleSize) {
-    els.learningBadge.textContent = 'No history yet';
-    els.learningSummary.textContent = 'The issues you take, finish, or dismiss help rank future suggestions. Dismissal reasons from Telegram count too.';
-    els.learningTags.innerHTML = '';
-    return;
-  }
-  const c = learning.counts || {};
-  els.learningBadge.textContent = `${learning.sampleSize} outcomes · ${learning.confidence}% confidence`;
-  els.learningSummary.textContent = learning.summary || '';
-  els.learningTags.innerHTML = [
-    createTag(`${c.merged || 0} merged`, 'tag-open'),
-    createTag(`${c.pr_opened || 0} PRs open`),
-    createTag(`${c.claimed || 0} claimed`),
-    createTag(`${c.dismissed || 0} dismissed`, 'tag-stale'),
-    ...(learning.boostedRepos || []).map(repo => createTag(`▲ ${escapeHtml(repo)}`, 'tag-open')),
-    ...(learning.penalizedRepos || []).map(repo => createTag(`▼ ${escapeHtml(repo)}`, 'tag-stale')),
-    ...(learning.dislikedLabels || []).map(label => createTag(`skips ${escapeHtml(label)}`, 'tag-stale')),
-  ].join('');
-}
-
-function renderStats() {
-  const visible = getVisibleOpportunities();
-  const total = visible.length;
-  const inProgress = visible.filter(item => item.status === 'In Progress').length;
-  const done = visible.filter(item => item.status === 'Done').length;
-  const high = visible.filter(item => item.priority === 'High').length;
-
-  els.metricTotal.textContent = String(total);
-  els.metricProgress.textContent = String(inProgress);
-  els.metricDone.textContent = String(done);
-  els.metricHigh.textContent = String(high);
-  els.storageBadge.textContent = state.storage === 'airtable' ? 'Saved to Airtable' : state.storage === 'local' ? 'Saved locally' : state.storage;
-}
-
-function renderHealth(payload) {
-  const currentRun = payload.currentRun;
-  const recentRuns = payload.recentRuns || [];
-  els.currentRunBadge.textContent = currentRun ? `Running • ${currentRun.trigger}` : 'Idle';
-
-  const lastRun = recentRuns[0];
-  if (!lastRun) {
-    els.lastRunSummary.textContent = 'No scans recorded yet.';
-    els.recentRunsList.innerHTML = '<div class="detail-empty">Your completed scans will appear here.</div>';
-    return;
-  }
-
-  const duration = typeof lastRun.durationMs === 'number'
-    ? `${Math.round(lastRun.durationMs / 100) / 10}s`
-    : 'unknown duration';
-  els.lastRunSummary.textContent = `Last scan: ${new Date(lastRun.startedAt).toLocaleString()} · ${lastRun.opportunities || 0} issues found · ${duration}`;
-
-  els.recentRunsList.innerHTML = recentRuns.map(run => `
-    <article class="watchlist-item">
-      <div>
-        <strong>${escapeHtml(run.status || 'Unknown')} · ${escapeHtml(run.trigger || 'unknown')}</strong>
-        <p>${escapeHtml(new Date(run.startedAt).toLocaleString())} · ${run.repositories || 0} repositories · ${run.opportunities || 0} issues saved</p>
-      </div>
-      <div class="watchlist-actions">
-        ${createTag(`${Math.round((run.durationMs || 0) / 100) / 10}s`)}
-      </div>
-    </article>
-  `).join('');
-}
-
-function applyFilters() {
-  const status = els.statusFilter.value;
-  const priority = els.priorityFilter.value;
-  const search = normalizeText(els.searchInput.value);
-
-  state.filtered = getVisibleOpportunities().filter(item => {
-    const matchesStatus = !status || item.status === status;
-    const matchesPriority = !priority || item.priority === priority;
-    const haystack = [
-      item.repo,
-      item.opportunity,
-      item.nextStep,
-      item.activityLog,
-      item.owner,
-    ].map(normalizeText).join(' ');
-    const matchesSearch = !search || haystack.includes(search);
-    return matchesStatus && matchesPriority && matchesSearch;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
-  if (state.currentPage > totalPages) state.currentPage = totalPages;
-  if (state.currentPage < 1) state.currentPage = 1;
-
-  renderList();
-}
-
-function statusClass(value) {
-  return String(value || '').toLowerCase().replace(/\s+/g, '-');
-}
-
-function createTag(label, className = '') {
-  return `<span class="tag ${className}">${label}</span>`;
-}
-
-function formatHistoryDate(value) {
-  if (!value) return 'Unknown date';
-  const date = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
-
-const STALE_DAYS = 14;
-
-function isStale(item) {
-  if (/done|closed|complete|dropped/i.test(String(item.status || ''))) return false;
-  const stamp = new Date(item.lastUpdated || item.date || '').getTime();
-  if (Number.isNaN(stamp)) return false;
-  return Date.now() - stamp > STALE_DAYS * 86400000;
-}
-
-function formatAgeShort(value) {
-  const stamp = new Date(value || '').getTime();
-  if (Number.isNaN(stamp)) return '';
-  const days = Math.floor((Date.now() - stamp) / 86400000);
-  if (days <= 0) return 'today';
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-  return `${Math.floor(days / 365)}y ago`;
-}
-
-// Fetches the live GitHub state for the selected item and renders the strip.
-async function loadLiveState(item) {
-  els.detailLive.classList.remove('hidden');
-  els.detailLive.innerHTML = '<span class="save-status">Checking GitHub…</span>';
-  const params = new URLSearchParams({ url: item.issueUrl, since: item.issueUpdatedAt || '' });
-  const res = await authorizedFetch(`/api/issue-status?${params}`);
-  if (!res.ok) {
-    els.detailLive.innerHTML = `<span class="save-status">${escapeHtml(await readErrorResponse(res))}</span>`;
-    return;
-  }
-  const live = await res.json();
-  if (state.selectedId !== item.id) return;
-  const openPRs = (live.linkedPRs || []).filter(pr => pr.state === 'open' && pr.sameRepo !== false);
-  const parts = [
-    createTag(live.state === 'closed' ? `Closed${live.stateReason ? ` (${escapeHtml(live.stateReason.replace(/_/g, ' '))})` : ''}` : 'Open upstream', live.state === 'closed' ? 'tag-closed' : 'tag-open'),
-    live.changedSinceSaved ? createTag('Changed since saved', 'tag-changed') : '',
-    live.assignees && live.assignees.length ? createTag(`Assigned: ${escapeHtml(live.assignees.join(', '))}`) : createTag('Unassigned'),
-    live.claim && live.claim.claimed ? createTag(`Claimed: ${escapeHtml(live.claim.reason)}`, 'tag-stale') : '',
-    ...openPRs.map(pr => `<a class="tag" href="${escapeHtml(pr.url)}" target="_blank" rel="noreferrer">Open PR #${pr.number}${pr.author ? ` by ${escapeHtml(pr.author)}` : ''}</a>`),
-    live.updatedAt ? createTag(`Updated ${escapeHtml(formatAgeShort(live.updatedAt))}`) : '',
-  ];
-  if (live.latestComment) {
-    parts.push(`<div class="live-comment"><strong>${escapeHtml(live.latestComment.author)}</strong> ${escapeHtml(formatAgeShort(live.latestComment.createdAt))}: ${escapeHtml(live.latestComment.body)}</div>`);
-  }
-  els.detailLive.innerHTML = parts.filter(Boolean).join('');
-}
-
-function renderList() {
-  const focusedId = document.activeElement?.classList.contains('list-item')
-    ? document.activeElement.dataset.id : null;
-  els.list.setAttribute('aria-busy', 'false');
-  if (!state.filtered.length) {
-    els.paginationSummary.textContent = '0 issues';
-    els.prevPageButton.disabled = true;
-    els.nextPageButton.disabled = true;
-    const hasFilters = els.statusFilter.value || els.priorityFilter.value || els.searchInput.value;
-    els.list.innerHTML = hasFilters
-      ? '<div class="detail-empty"><strong>No matching issues</strong><p>Try a different search or clear the status and priority filters.</p><button type="button" class="button button-secondary" data-clear-filters>Clear filters</button></div>'
-      : '<div class="detail-empty"><strong>Your queue is empty</strong><p>Run a scan to find open issues in your watchlist. If you haven’t added any projects, the scan checks BitcoinDevs and the project directory.</p><button type="button" class="button button-secondary" data-run-scan>Run your first scan</button><a class="text-link" href="#projects">Browse projects →</a></div>';
-    showEmptyState();
-    return;
-  }
-
-  const start = (state.currentPage - 1) * state.pageSize;
-  const end = start + state.pageSize;
-  const visibleItems = state.filtered.slice(start, end);
-  const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
-  els.paginationSummary.textContent = `Showing ${start + 1}-${Math.min(end, state.filtered.length)} of ${state.filtered.length}`;
-  els.prevPageButton.disabled = state.currentPage === 1;
-  els.nextPageButton.disabled = state.currentPage >= totalPages;
-
-  let lastDate = null;
-  els.list.innerHTML = visibleItems.map(item => {
-    const dateHeader = item.date !== lastDate
-      ? `<div class="history-divider">${escapeHtml(formatHistoryDate(item.date))}</div>`
-      : '';
-    lastDate = item.date;
-    return `
-    ${dateHeader}
-    <button type="button" class="list-item ${item.id === state.selectedId ? 'active' : ''}" data-id="${escapeHtml(item.id)}" aria-pressed="${item.id === state.selectedId}">
-      <span class="list-item-header">
-        <span class="issue-title">${escapeHtml(item.opportunity)}</span>
-      </span>
-      <span class="list-repo">${escapeHtml(item.repo)}</span>
-      <span class="list-meta">
-        ${createTag(escapeHtml(item.status || 'New'), `status-${statusClass(item.status)}`)}
-        ${item.priority === 'High' ? createTag('High priority', 'priority-high') : ''}
-        ${createTag(`${escapeHtml(item.effort || 'medium')} effort`)}
-        ${isStale(item) ? createTag('Quiet for 14+ days', 'tag-stale') : ''}
-      </span>
-      <span class="list-footer">
-        ${item.owner ? createTag(`Owner: ${escapeHtml(item.owner)}`) : ''}
-        ${item.dueDate ? createTag(`Due: ${escapeHtml(item.dueDate)}`) : ''}
-      </span>
-    </button>
-  `;
-  }).join('');
-
-  els.list.querySelectorAll('.list-item').forEach(node => {
-    node.addEventListener('click', () => selectOpportunity(node.dataset.id, true));
-    if (node.dataset.id === focusedId) node.focus({ preventScroll: true });
-  });
-}
-
-function showEmptyState() {
-  els.detailEmpty.classList.remove('hidden');
-  els.detailForm.classList.add('hidden');
-}
-
-function selectOpportunity(id, focusDetail = false) {
-  state.selectedId = id;
-  renderList();
-
-  const item = state.filtered.find(entry => entry.id === id)
-    || getVisibleOpportunities().find(entry => entry.id === id);
-  if (!item) {
-    showEmptyState();
-    return;
-  }
-
-  els.detailEmpty.classList.add('hidden');
-  els.detailForm.classList.remove('hidden');
-  els.detailRepo.textContent = item.repo || 'Unassigned repo';
-  els.detailSource.textContent = [
-    item.source ? `Source ${item.source}` : '',
-    item.score ? `Score ${item.score}` : '',
-    item.issueUpdatedAt ? `Issue updated ${new Date(item.issueUpdatedAt).toLocaleString()}` : '',
-  ].filter(Boolean).join(' • ');
-  els.detailTitle.textContent = item.opportunity || 'Untitled issue';
-  els.detailIssueLink.href = item.issueUrl || '#';
-  els.detailIssueLink.style.visibility = item.issueUrl ? 'visible' : 'hidden';
-  els.detailStatus.value = item.status || 'New';
-  els.detailPriority.value = item.priority || 'Medium';
-  els.detailOwner.value = item.owner || '';
-  els.detailDueDate.value = item.dueDate || '';
-  els.detailNextStep.value = item.nextStep || '';
-  els.detailPrUrl.value = item.prUrl || '';
-  els.detailActivityLog.value = item.activityLog || '';
-  els.detailQuickPlan.value = item.quickPlan || '';
-  els.detailQualifies.textContent = item.whyItQualifies || 'No recommendation notes saved.';
-  els.detailAction.textContent = item.suggestedAction || 'No suggested change saved.';
-  els.detailMatters.textContent = item.whyItMatters || 'No impact notes saved.';
-  els.detailTip.textContent = item.clarityTip || 'No test instructions saved.';
-  els.detailCode.textContent = item.codeSkeleton || '// No suggested code saved.';
-  renderDetailAnalysis(item.analysis || null);
-  if (item.issueUrl) {
-    loadLiveState(item).catch(error => {
-      els.detailLive.innerHTML = `<span class="save-status">${escapeHtml(error.message)}</span>`;
-    });
-  } else {
-    els.detailLive.classList.add('hidden');
-  }
-  els.detailAnalyzeButton.disabled = !item.issueUrl;
-  els.detailAnalyzeButton.textContent = item.analysis ? 'Re-analyze issue' : 'Analyze issue';
-  const summary = [
-    item.date ? `Scan date ${item.date}` : '',
-    item.lastUpdated ? `Last updated ${new Date(item.lastUpdated).toLocaleString()}` : '',
-  ].filter(Boolean).join(' • ');
-  els.saveStatus.textContent = summary;
-  if (focusDetail && window.matchMedia('(max-width: 840px)').matches) {
-    els.detailTitle.focus({ preventScroll: true });
-    els.detailForm.scrollIntoView({ block: 'start', behavior: 'instant' });
-  }
-}
-
-function escapeHtml(value) {
-  return String(value || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-function rememberApiKey(apiKey) {
-  state.apiKey = apiKey;
-  if (apiKey) {
-    window.sessionStorage.setItem('danagent.apiKey', apiKey);
-    return;
-  }
-  window.sessionStorage.removeItem('danagent.apiKey');
-}
-
-async function readErrorResponse(res) {
-  try {
-    const payload = await res.clone().json();
-    return payload.error || `Request failed with status ${res.status}`;
-  } catch {
-    return `Request failed with status ${res.status}`;
-  }
-}
-
-async function authorizedFetch(url, options = {}, retry = true) {
+async function api(url, options = {}, retry = true) {
   const headers = new Headers(options.headers || {});
-  if (state.apiKey) {
-    headers.set('X-API-Key', state.apiKey);
+  if (state.key) headers.set('X-API-Key', state.key);
+  if (options.body) headers.set('Content-Type', 'application/json');
+  const response = await fetch(url, { ...options, headers });
+  if (response.status === 401 && retry) {
+    if (await requestKey()) return api(url, options, false);
   }
-
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
-
-  if (response.status !== 401 || !retry) {
-    return response;
-  }
-
-  const nextApiKey = window.prompt('Enter the dashboard API key.', state.apiKey || '');
-  if (!nextApiKey) {
-    rememberApiKey('');
-    return response;
-  }
-
-  rememberApiKey(nextApiKey.trim());
-  return authorizedFetch(url, options, false);
+  let data;
+  try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Try again.'); }
+  if (response.status === 401) throw new Error('The dashboard key wasn’t accepted. Use Workspace access to try again.');
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+  return data;
 }
-
-async function loadOpportunities() {
-  els.scanStatus.textContent = 'Loading issues…';
-  const res = await authorizedFetch('/api/opportunities');
-  if (!res.ok) {
-    throw new Error(await readErrorResponse(res));
-  }
-  const payload = await res.json();
-  state.opportunities = payload.opportunities || [];
-  state.storage = payload.storage || 'unknown';
-  state.currentPage = 1;
-  renderLearning(payload.learning || null);
-  renderStats();
-  applyFilters();
-
-  if (!state.selectedId && state.filtered[0]) {
-    selectOpportunity(state.filtered[0].id);
-  } else if (state.selectedId) {
-    selectOpportunity(state.selectedId);
-  }
-  els.scanStatus.textContent = 'Ready';
+async function loadItems() {
+  const data = await api('/api/opportunities');
+  state.items = data.opportunities || [];
+  state.learning = data.learning;
+  state.loaded = true;
+  $('storage-status').textContent = data.storage === 'airtable' ? 'Saved to Airtable' : data.storage === 'local' ? 'Saved locally' : 'Storage connected';
+  renderQueue(); renderRepos(); renderRanking();
 }
-
-async function loadRepositories() {
-  const res = await authorizedFetch('/api/repositories');
-  if (!res.ok) {
-    throw new Error(await readErrorResponse(res));
-  }
-  const payload = await res.json();
-  state.repositories = payload.repositories || [];
-  renderRepositories();
-  renderStats();
-  applyFilters();
-}
-
+async function loadRepos() { state.repos = (await api('/api/repositories')).repositories || []; renderRepos(); updateCounts(); }
 async function loadHealth() {
-  const res = await authorizedFetch('/api/health');
-  if (!res.ok) {
-    throw new Error(await readErrorResponse(res));
+  state.health = await api('/api/health');
+  const bots = state.health.config?.telegramBots || 0;
+  $('telegram-status').innerHTML = `<i aria-hidden="true"></i>${bots ? 'Telegram configured' : 'Telegram not configured'}`;
+  $('telegram-status').classList.toggle('configured', !!bots);
+  renderScans(); renderRepos(); renderHeader();
+}
+function updateCounts() {
+  $('queue-count').textContent = state.loaded ? state.items.filter(Q.isOpen).length : '—';
+  $('repos-count').textContent = state.repos.length;
+}
+function renderHeader() {
+  const run = state.health.recentRuns?.[0];
+  const scans = `<span class="muted">${run ? `Last scan ${escapeHtml(shortDate(run.startedAt, true).toLowerCase())}` : 'No scans yet'}</span><button type="button" class="button" data-scan ${state.running ? 'disabled' : ''}>${state.running ? 'Scanning…' : 'Scan now'}</button>`;
+  $('page-title').classList.remove('hidden');
+  $('page-subtitle').classList.remove('hidden');
+  $('page-title').textContent = state.view === 'repos' ? 'Repos' : state.view === 'scans' ? 'Scans' : 'Queue';
+  document.title = `${state.view === 'issue' ? state.draft?.opportunity || 'Issue' : $('page-title').textContent} · dan/queue`;
+  if (state.view === 'issue' && state.draft) {
+    $('page-title').classList.add('hidden');
+    $('page-subtitle').innerHTML = `<span class="breadcrumb"><a href="#queue">Queue</a><span>/</span><span>${escapeHtml(ref(state.draft))}</span></span>`;
+    const dismissed = Q.displayStatus(state.draft) === 'Dismissed';
+    $('page-actions').innerHTML = `<span class="muted" id="save-indicator" role="status">${state.dirty ? 'Unsaved changes' : 'Saved'}</span><button type="button" class="button button-secondary" data-${dismissed ? 'restore' : 'dismiss'}>${dismissed ? 'Restore issue' : 'Dismiss'}</button>${safeUrl(state.draft.issueUrl) ? `<a class="button button-secondary" href="${escapeHtml(safeUrl(state.draft.issueUrl))}" target="_blank" rel="noreferrer">Open on GitHub</a>` : ''}<button class="button" type="submit" form="detail-form" id="save-button" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>`;
+  } else if (state.view === 'repos') {
+    const enabled = state.repos.filter(repo => repo.enabled !== false).length;
+    $('page-subtitle').textContent = `${state.repos.length} watched · ${enabled} included in scans`;
+    $('page-actions').innerHTML = '<button class="button button-secondary" type="button" data-schedule>View schedule</button>';
+  } else if (state.view === 'scans') {
+    $('page-subtitle').textContent = state.health.currentRun ? 'A scan is running' : scheduleText();
+    $('page-actions').innerHTML = scans;
+  } else {
+    const latest = state.items.map(item => item.date).filter(Boolean).sort().at(-1);
+    const n = state.items.filter(item => Q.displayStatus(item) === 'New' && item.date === latest).length;
+    $('page-subtitle').textContent = state.loaded ? n ? `${n} new in the latest scan` : 'Your open issues and work in progress' : 'Loading issues…';
+    $('page-actions').innerHTML = scans;
   }
-  renderHealth(await res.json());
+}
+function scheduleText() {
+  const schedule = state.health.schedule;
+  if (!schedule) return 'Schedule managed by your deployment';
+  const match = schedule.cron?.match(/^(\d+) (\d+) \* \* \*$/);
+  return match ? `Scheduled daily at ${String(match[2]).padStart(2,'0')}:${String(match[1]).padStart(2,'0')} · ${schedule.timezone}` : `Scheduled scans · ${schedule.timezone}`;
+}
+function renderQueue() {
+  updateCounts();
+  $('status-tabs').innerHTML = statuses.map(status => {
+    const n = state.items.filter(item => status === 'Open' ? Q.isOpen(item) : Q.displayStatus(item) === status).length;
+    if (status === 'Closed' && !n && state.filters.status !== status) return '';
+    return `<button type="button" class="status-tab${state.filters.status === status ? ' active' : ''}" data-status="${status}" aria-pressed="${state.filters.status === status}">${status === 'In Progress' ? 'In progress' : status}<span>${state.loaded ? n : '—'}</span></button>`;
+  }).join('');
+  const repos = [...new Set([...state.items.map(item => item.repo), ...state.repos.map(repo => repo.repo)])].filter(Boolean).sort();
+  $('repo-filter').innerHTML = '<option value="">Any repo</option>' + repos.map(repo => `<option value="${escapeHtml(repo)}">${escapeHtml(repo)}</option>`).join('');
+  $('repo-filter').value = state.filters.repo;
+  const filtered = Q.filterIssues(state.items, state.filters);
+  const visible = filtered.slice(0, state.limit);
+  $('queue-body').setAttribute('aria-busy', !state.loaded);
+  if (!state.loaded) {
+    $('queue-body').innerHTML = '<div class="empty-state">Loading your issues…</div>';
+  } else if (!filtered.length) {
+    const empty = !state.items.length;
+    $('queue-body').innerHTML = `<div class="empty-state"><strong>${empty ? 'Your queue is empty' : 'No matching issues'}</strong><p>${empty ? 'Watch a repository and run a scan to find open issues. An empty watchlist uses the Bitcoin project directory.' : 'Try another repository, status, or search.'}</p><button class="button button-secondary" type="button" ${empty ? 'data-scan' : 'data-clear-filters'}>${empty ? 'Run your first scan' : 'Clear filters'}</button></div>`;
+  } else {
+    let group = '';
+    $('queue-body').innerHTML = `<table class="queue-table"><caption class="sr-only">Contribution issues, sorted by ${escapeHtml(state.filters.sort)}</caption><colgroup><col class="fit-col"><col><col class="labels-col"><col class="effort-col"><col class="age-col"><col class="status-col"><col class="owner-col"></colgroup><thead><tr><th scope="col">Fit</th><th scope="col">Issue</th><th scope="col">Labels</th><th scope="col">Effort</th><th scope="col" title="Latest recorded GitHub activity">Updated</th><th scope="col">Status</th><th scope="col">Owner</th></tr></thead><tbody>${visible.map(item => {
+      const status = Q.displayStatus(item);
+      const nextGroup = status === 'In Progress' ? 'In progress' : state.filters.sort === 'recent' ? shortDate(item.issueUpdatedAt || item.date) : 'Best matches';
+      const divider = nextGroup !== group ? `<tr class="group-row"><th colspan="7" scope="rowgroup">${escapeHtml(nextGroup)}</th></tr>` : '';
+      group = nextGroup;
+      const availability = Q.availability(item);
+      const taken = ['claimed', 'has_open_pr', 'likely_done'].includes(availability);
+      return `${divider}<tr class="issue-row${state.selected === item.id ? ' selected' : ''}" data-issue="${escapeHtml(item.id)}"><td>${scoreHtml(item)}</td><td><span class="issue-reference">${escapeHtml(ref(item))}</span><a class="issue-link" href="#issue/${encodeURIComponent(item.id)}">${escapeHtml(item.opportunity || 'Untitled issue')}</a></td><td><div class="labels">${Q.labels(item).slice(0, 3).map(labelHtml).join('')}${taken ? createTag(availability === 'has_open_pr' ? 'Open PR' : 'Taken', 'tag-warn') : ''}</div></td><td>${escapeHtml(item.effort || 'Unclear')}</td><td class="muted" title="${escapeHtml(item.issueUpdatedAt || '')}">${age(item.issueUpdatedAt)}</td><td class="status-${status === 'New' ? 'new' : status === 'In Progress' ? 'progress' : status.toLowerCase()}">${status === 'In Progress' ? 'In progress' : status}</td><td>${item.owner ? `<span class="avatar" title="${escapeHtml(item.owner)}" aria-label="Owner: ${escapeHtml(item.owner)}">${escapeHtml(Q.initials(item.owner))}</span>` : '<span class="muted">–</span>'}</td></tr>`;
+    }).join('')}</tbody></table>`;
+  }
+  $('queue-pagination').innerHTML = state.loaded ? `<span>Showing ${visible.length} of ${filtered.length}.${state.items.length && state.items.length !== filtered.length ? ` ${state.items.length} tracked in total.` : ''}</span>${visible.length < filtered.length ? '<button class="text-button" type="button" data-more>Show the rest</button>' : ''}` : '';
+  if (state.view === 'queue') renderHeader();
 }
 
+function setDirty() {
+  state.dirty = true;
+  if ($('save-indicator')) $('save-indicator').textContent = 'Unsaved changes';
+}
+function readDraft() {
+  if (!state.draft) return;
+  Object.assign(state.draft, {
+    status: $('detail-status').value, priority: $('detail-priority').value, owner: $('detail-owner').value.trim(),
+    dueDate: $('detail-due').value, prUrl: $('detail-pr').value.trim(), nextStep: $('detail-next').value.trim(),
+  });
+}
+function renderPlan() {
+  const steps = state.draft.steps;
+  $('plan-progress').textContent = steps.length ? `${steps.filter(step => step.done).length} of ${steps.length} complete` : '';
+  $('plan-list').innerHTML = steps.length ? steps.map((step, i) => `<div class="plan-step"><input id="plan-step-${i}" type="checkbox" data-step="${i}" ${step.done ? 'checked' : ''}><label for="plan-step-${i}">${escapeHtml(step.text)}</label><button type="button" class="step-remove" data-remove-step="${i}" aria-label="Remove step ${i + 1}">×</button></div>`).join('') : '<p class="muted">Add your own steps, or analyze the issue for a suggested plan.</p>';
+}
+function renderActivity() {
+  const entries = Q.activityEntries(state.draft.activityLog);
+  $('activity-list').innerHTML = entries.length ? entries.map(entry => `<article class="activity-entry"><p>${escapeHtml(entry.text)}</p><span>${escapeHtml([entry.who, entry.at ? shortDate(entry.at, true) : ''].filter(Boolean).join(', '))}</span></article>`).join('') : '<p class="muted">Your work notes and status changes will appear here.</p>';
+}
+function renderIssue(item) {
+  state.selected = item.id;
+  state.draft = { ...item, steps: Q.parsePlan(item.quickPlan || item.analysis?.analysis?.plan || item.nextStep || item.suggestedAction) };
+  state.dirty = false;
+  $('detail-title').textContent = item.opportunity || 'Untitled issue';
+  const a = item.analysis?.analysis || {};
+  const issue = item.analysis?.context?.issue;
+  $('detail-summary').textContent = issue ? `Opened ${shortDate(issue.createdAt).toLowerCase()}${issue.author ? ` by ${issue.author}` : ''}. ${issue.commentsCount || 0} comments.` : `Tracked ${shortDate(item.date).toLowerCase()}.${item.issueUpdatedAt ? ` Last GitHub activity ${shortDate(item.issueUpdatedAt, true).toLowerCase()}.` : ''}`;
+  $('detail-score').textContent = Q.score(item) || '—';
+  const reasons = [...new Set([item.whyItQualifies, a.maintainerWants || item.maintainerWants, a.stateReason].filter(Boolean))];
+  $('detail-reasons').innerHTML = reasons.length ? reasons.map(reason => `<p>${escapeHtml(reason)}</p>`).join('') : '<p class="muted">No ranking explanation is saved. Analyze the issue to inspect the discussion.</p>';
+  $('detail-status').value = item.status === 'In Progress' ? 'In Progress' : /done|closed/i.test(item.status) ? 'Done' : 'New';
+  $('detail-priority').value = item.priority || 'Medium';
+  $('detail-owner').value = item.owner || '';
+  $('detail-due').value = item.dueDate || '';
+  $('detail-pr').value = item.prUrl || '';
+  $('detail-next').value = item.nextStep || '';
+  $('activity-note').value = '';
+  $('new-step').value = '';
+  renderPlan(); renderActivity(); renderCode(a.codeSkeleton || item.codeSkeleton);
+  $('detail-analysis').innerHTML = item.analysis?.analysis ? analysisHtml(item.analysis) : '';
+  $('detail-analysis').classList.toggle('hidden', !item.analysis?.analysis);
+  $('analysis-status').textContent = item.analysis?.analysis ? 'Analysis saved with this issue.' : 'Read the discussion and source before starting.';
+  $('analyze-button').disabled = !safeUrl(item.issueUrl);
+  $('analyze-button').textContent = item.analysis ? 'Refresh analysis' : 'Analyze issue';
+  $('recommendation-notes').innerHTML = [['Suggested change', item.suggestedAction], ['Expected impact', item.whyItMatters], ['How to test it', item.clarityTip], ['Files to change', item.filesToChange], ['Open questions', item.openQuestions]].filter(([, text]) => text).map(([title, text]) => `<section><h4>${title}</h4><p>${escapeHtml(text)}</p></section>`).join('') + (item.source ? `<section><h4>Source</h4><p>${safeUrl(item.sourceUrl) ? `<a href="${escapeHtml(safeUrl(item.sourceUrl))}" target="_blank" rel="noreferrer">${escapeHtml(item.source)}</a>` : escapeHtml(item.source)}</p></section>` : '') || '<p class="muted">No additional notes saved.</p>';
+  $('detail-live').innerHTML = '<span class="muted">Checking GitHub…</span>';
+  renderHeader();
+  if (safeUrl(item.issueUrl)) loadLive(item); else $('detail-live').innerHTML = '';
+}
+function renderCode(code) { $('detail-code').textContent = code || ''; $('code-section').classList.toggle('hidden', !code); }
+async function loadLive(item) {
+  try {
+    const data = await api(`/api/issue-status?${new URLSearchParams({ url: item.issueUrl, since: item.issueUpdatedAt || '' })}`);
+    if (state.selected !== item.id || state.view !== 'issue') return;
+    const prs = (data.linkedPRs || []).filter(pr => pr.state === 'open' && pr.sameRepo !== false);
+    $('detail-live').innerHTML = [createTag(data.state === 'closed' ? 'Closed on GitHub' : 'Open on GitHub', data.state === 'closed' ? 'tag-closed' : 'tag-good'), data.assignees?.length ? createTag(`Assigned to ${escapeHtml(data.assignees.join(', '))}`) : createTag('Unassigned'), data.claim?.claimed ? createTag('Claimed in the discussion', 'tag-warn') : '', ...prs.map(pr => `<a class="tag tag-warn" href="${escapeHtml(safeUrl(pr.url))}" target="_blank" rel="noreferrer">Open PR #${escapeHtml(pr.number)}</a>`)].join('');
+  } catch (error) { if (state.selected === item.id) $('detail-live').textContent = `GitHub check unavailable: ${error.message}`; }
+}
+function appendActivity(message) { state.draft.activityLog = [state.draft.activityLog, `[dashboard ${new Date().toISOString()}] ${message}`].filter(Boolean).join('\n'); }
+function addNote() { const note = $('activity-note').value.trim(); if (!note) return; appendActivity(note.replace(/\n/g, ' ')); $('activity-note').value = ''; setDirty(); renderActivity(); }
+function addStep() { const text = $('new-step').value.trim(); if (!text) return; state.draft.steps.push({text,done:false}); $('new-step').value = ''; setDirty(); renderPlan(); $('new-step').focus(); }
+async function saveIssue({ dismiss = false } = {}) {
+  if (!state.draft || state.saving) return false;
+  if (!$('detail-form').reportValidity()) return false;
+  state.saving = true;
+  readDraft();
+  if ($('new-step').value.trim()) addStep();
+  if ($('activity-note').value.trim()) addNote();
+  const original = state.items.find(item => item.id === state.selected);
+  const previousLog = state.draft.activityLog;
+  if (original && original.status !== state.draft.status) appendActivity(`Status changed to ${state.draft.status}`);
+  if (original && original.priority !== state.draft.priority) appendActivity(`Priority changed to ${state.draft.priority}`);
+  if (!dismiss && original?.status !== 'Done' && state.draft.status === 'Done') appendActivity('Marked done [outcome completed]');
+  const payload = { status: state.draft.status, priority: state.draft.priority, owner: state.draft.owner, dueDate: state.draft.dueDate, prUrl: state.draft.prUrl, nextStep: state.draft.nextStep, quickPlan: Q.serializePlan(state.draft.steps), activityLog: state.draft.activityLog };
+  renderHeader();
+  try {
+    const data = await api(`/api/opportunities/${encodeURIComponent(state.selected)}`, {method:'PUT',body:JSON.stringify(payload)});
+    const index = state.items.findIndex(item => item.id === state.selected);
+    state.items[index] = data.opportunity;
+    state.draft = {...data.opportunity, steps:Q.parsePlan(data.opportunity.quickPlan)};
+    state.dirty = false;
+    renderActivity(); renderQueue(); renderRepos();
+    toast('Changes saved.');
+    return true;
+  } catch (error) { state.draft.activityLog = previousLog; showNotice(`Couldn’t save: ${error.message}`, true); return false; }
+  finally { state.saving = false; renderHeader(); }
+}
+async function analyzeIssue() {
+  const item = state.draft;
+  if (!item) return;
+  readDraft();
+  $('analyze-button').disabled = true;
+  $('analysis-status').textContent = 'Reading the issue, discussion, pull requests, and source files…';
+  try {
+    const result = await api('/api/issue-analysis', {method:'POST',body:JSON.stringify({url:item.issueUrl, recordId:item.id, force:!!item.analysis})});
+    if (state.selected !== item.id || state.view !== 'issue') return;
+    state.items.find(entry => entry.id === item.id).analysis = result;
+    state.draft.analysis = result;
+    $('detail-analysis').innerHTML = analysisHtml(result);
+    $('detail-analysis').classList.remove('hidden');
+    const a = result.analysis || {};
+    if (!state.draft.steps.length && a.plan?.length) { state.draft.steps = Q.parsePlan(a.plan); renderPlan(); setDirty(); }
+    if (!$('detail-next').value && a.plan?.[0]) { $('detail-next').value = a.plan[0]; setDirty(); }
+    if (a.codeSkeleton) renderCode(a.codeSkeleton);
+    $('analysis-status').textContent = 'Analysis ready. Review the suggested steps before saving your plan.';
+    renderQueue();
+  } catch (error) { if (state.selected === item.id) $('analysis-status').textContent = error.message; }
+  finally { if (state.selected === item.id) { $('analyze-button').disabled = false; $('analyze-button').textContent = 'Refresh analysis'; } }
+}
+
+async function dismissIssue(event) {
+  event.preventDefault();
+  const id = state.selected;
+  const original = state.items.find(item => item.id === id);
+  if (!original) return;
+  const before = {status:original.status, activityLog:original.activityLog || ''};
+  readDraft();
+  state.draft.status = 'Done';
+  $('detail-status').value = 'Done';
+  appendActivity(`Dismissed (${ $('dismiss-reason').value }) [dismiss reason: ${ $('dismiss-reason').value }] [outcome dismissed]`);
+  setDirty();
+  const saved = await saveIssue({dismiss:true});
+  if (!saved) return;
+  $('dismiss-dialog').close();
+  state.filters.status = 'Open';
+  navigate('#queue');
+  toast('Issue dismissed.', async () => {
+    const data = await api(`/api/opportunities/${encodeURIComponent(id)}`, {method:'PUT',body:JSON.stringify(before)});
+    state.items[state.items.findIndex(item => item.id === id)] = data.opportunity;
+    renderQueue(); renderRepos();
+    toast('Dismissal undone.');
+    loadItems().catch(error => showNotice(error.message,true));
+  });
+  loadItems().catch(error => showNotice(error.message,true));
+}
+async function restoreIssue() {
+  state.draft.status = 'New';
+  $('detail-status').value = 'New';
+  appendActivity('Restored to the queue');
+  setDirty();
+  await saveIssue();
+  loadItems().catch(error => showNotice(error.message,true));
+}
+function renderRepos() {
+  updateCounts();
+  const runs = state.health.recentRuns || [];
+  const watched = state.repos;
+  if (!watched.length) {
+    $('watched-repos').innerHTML = '<div class="empty-state"><strong>No repositories watched yet</strong><p>Check a repository above, or browse the Bitcoin project directory below.</p></div>';
+  } else {
+    $('watched-repos').innerHTML = `<table class="repo-table"><caption class="sr-only">Watched repositories</caption><colgroup><col class="repo-name-col"><col><col><col><col><col class="repo-actions-col"></colgroup><thead><tr><th scope="col">Watching</th><th scope="col">Open matches</th><th scope="col">Best fit now</th><th scope="col">Last scanned</th><th scope="col">Included in scans</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${watched.map(repo => {
+      const items = state.items.filter(item => item.repo.toLowerCase() === repo.repo.toLowerCase() && Q.isOpen(item));
+      const best = items.length ? Math.max(...items.map(Q.score)) : 0;
+      const run = runs.find(run => run.status === 'completed' && run.repositoryNames?.includes(repo.repo));
+      return `<tr><td class="repo-name"><a href="https://github.com/${escapeHtml(repo.repo)}" target="_blank" rel="noreferrer">${escapeHtml(repo.repo)}</a></td><td><button type="button" class="text-button" data-repo-matches="${escapeHtml(repo.repo)}" aria-label="Show ${items.length} open matches in ${escapeHtml(repo.repo)}">${items.length}</button></td><td>${scoreHtml({score:best},false)}</td><td class="muted">${repo.enabled === false ? 'Paused' : run ? escapeHtml(shortDate(run.startedAt,true)) : 'Not recorded'}</td><td><button type="button" class="switch" role="switch" aria-checked="${repo.enabled !== false}" aria-label="Include ${escapeHtml(repo.repo)} in scans" data-toggle-repo="${escapeHtml(repo.id)}"></button></td><td><button class="text-button" type="button" data-remove-repo="${escapeHtml(repo.id)}">Remove</button></td></tr>`;
+    }).join('')}</tbody></table>`;
+  }
+  if (state.inspection) renderInspection();
+  if (state.catalog) renderDirectory();
+  if (state.view === 'repos') renderHeader();
+}
+function renderInspection() {
+  const repo = state.inspection;
+  const overview = repo.overview || {};
+  const issues = repo.issues || [];
+  const candidates = issues.filter(issue => !issue.claim?.claimed);
+  const sorted = [...candidates].sort((a,b) => Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0));
+  const watched = state.repos.some(item => item.repo.toLowerCase() === repo.repo.toLowerCase());
+  const good = issues.filter(issue => (issue.labels || []).some(label => /good first issue/i.test(typeof label === 'string' ? label : label.name))).length;
+  $('repo-inspection-result').innerHTML = `<div class="inspection-header"><div><h2>${escapeHtml(repo.repo)}</h2><p>${escapeHtml(overview.description || overview.projectSummary || '')}</p></div><button class="button" type="button" data-watch="${escapeHtml(repo.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button></div><div class="repo-metrics"><div><strong>${typeof overview.openIssues === 'number' ? overview.openIssues : issues.length}</strong><span>${typeof overview.openIssues === 'number' ? 'open issues + PRs' : 'issues checked'}</span></div><div><strong>${good}</strong><span>good first issues checked</span></div><div><strong>${candidates.filter(issue => Number(issue.issueFitScore)>=70).length}</strong><span>matches above 70</span></div><div><strong>${escapeHtml(overview.language || '—')}</strong><span>primary language</span></div></div>${sorted.slice(0,5).map(issue => `<div class="inspected-issue">${scoreHtml({score:issue.issueFitScore},false)}<a href="${escapeHtml(safeUrl(issue.url))}" target="_blank" rel="noreferrer"><span class="muted">#${escapeHtml(issue.number)}</span> ${escapeHtml(issue.title)}</a></div>`).join('') || '<p class="muted">No unclaimed open issues were found in this check.</p>'}<p class="inspection-footer">${issues.length} issues checked. Fit estimates use labels and discussion; analyze an issue to check its current requirements.</p>`;
+}
+async function inspectRepo(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button');
+  button.disabled = true;
+  $('repo-check-status').textContent = 'Checking open issues…';
+  try {
+    state.inspection = (await api('/api/repo-issues',{method:'POST',body:JSON.stringify({repo:$('repo-input').value.trim()})})).repo;
+    renderInspection();
+    $('repo-check-status').textContent = `Checked ${state.inspection.repo}.`;
+  } catch (error) { $('repo-check-status').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+async function watchRepo(repo) {
+  const data = await api('/api/repositories',{method:'POST',body:JSON.stringify({repo})});
+  await loadRepos();
+  toast(`${data.repository.repo} added to your watchlist.`);
+}
+async function toggleRepo(id, button) {
+  const repo = state.repos.find(item => item.id === id);
+  if (!repo) return;
+  button.disabled = true;
+  try {
+    const data = await api(`/api/repositories/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({enabled:repo.enabled === false})});
+    state.repos[state.repos.findIndex(item => item.id === id)] = data.repository;
+    renderRepos();
+    toast(`${repo.repo} ${data.repository.enabled ? 'included in scans' : 'paused'}.`);
+  } catch (error) { button.disabled = false; showNotice(error.message,true); }
+}
+async function removeRepo(id) {
+  const repo = state.repos.find(item => item.id === id);
+  await api(`/api/repositories/${encodeURIComponent(id)}`,{method:'DELETE'});
+  await loadRepos();
+  toast(`${repo?.repo || 'Repository'} removed from your watchlist.`);
+}
+function renderDirectory() {
+  const {areas, projects} = state.catalog;
+  $('project-filters').innerHTML = [{area:'',label:'All areas'},...areas].map(area => `<button type="button" data-area="${escapeHtml(area.area)}" aria-pressed="${state.area === area.area}">${escapeHtml(area.label)}</button>`).join('');
+  $('project-directory').innerHTML = projects.filter(project => !state.area || project.area === state.area).map(project => {
+    const watched = state.repos.some(repo => repo.repo.toLowerCase() === project.repo.toLowerCase());
+    return `<article class="project-item"><a href="https://github.com/${escapeHtml(project.repo)}" target="_blank" rel="noreferrer">${escapeHtml(project.repo)}</a><p>${escapeHtml(project.blurb)}</p><div class="section-line"><span>${escapeHtml(project.language)}</span><button class="text-button" type="button" data-watch="${escapeHtml(project.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button></div></article>`;
+  }).join('');
+}
+function renderScans() {
+  const runs = [...(state.health.currentRun ? [state.health.currentRun] : []),...(state.health.recentRuns || [])];
+  $('scans-table').innerHTML = runs.length ? `<table class="scan-table"><caption class="sr-only">Scan history</caption><colgroup><col class="started-col"><col class="trigger-col"><col><col><col><col></colgroup><thead><tr><th scope="col">Started</th><th scope="col">Trigger</th><th scope="col">Repos</th><th scope="col">Issues read</th><th scope="col" title="Recommendations saved by this scan">Saved</th><th scope="col">Took</th></tr></thead><tbody>${runs.map(run => {
+    const trigger = /cron|schedule/i.test(run.trigger) ? 'Schedule' : /telegram/i.test(run.trigger) ? 'Telegram' : /manual|api/i.test(run.trigger) ? 'Dashboard' : run.trigger || 'Unknown';
+    const failed = ['failed','partial'].includes(run.status);
+    return failed ? `<tr class="scan-error"><td>${escapeHtml(shortDate(run.startedAt,true))}</td><td colspan="5"><div class="scan-error-detail"><span>${escapeHtml(run.error || 'This scan did not finish.')}</span><button class="button button-secondary" type="button" data-run-log="${escapeHtml(run.id)}">Show log</button><button class="button button-secondary" type="button" data-scan ${state.running ? 'disabled' : ''}>Retry</button></div></td></tr>` : `<tr><td>${escapeHtml(shortDate(run.startedAt,true))}${run.status === 'running' ? ' · Running' : ''}</td><td>${escapeHtml(trigger)}</td><td>${run.repositories ?? '—'}</td><td>${run.totalIssues ?? '—'}</td><td><strong>${run.opportunities ?? '—'}</strong></td><td>${run.durationMs != null ? `${Math.round(run.durationMs/1000)} s` : '…'}</td></tr>`;
+  }).join('')}</tbody></table>` : '<div class="empty-state"><strong>No scans recorded yet</strong><p>Run a scan to check your repositories and build a history.</p><button class="button button-secondary" type="button" data-scan>Scan now</button></div>';
+  if (state.view === 'scans') renderHeader();
+}
+function renderRanking() {
+  const learning = state.learning;
+  if (!learning?.sampleSize) {
+    $('ranking-summary').innerHTML = '<p class="muted">No ranking adjustments yet. Taking, finishing, and dismissing issues helps rank future suggestions.</p>';
+  } else {
+    const c = learning.counts || {};
+    const parts = [];
+    if (learning.boostedRepos?.length) parts.push(`<p>Issues in <strong>${learning.boostedRepos.map(escapeHtml).join(', ')}</strong> get more weight based on your contribution history.</p>`);
+    if (learning.dislikedLabels?.length) parts.push(`<p>Issues labelled <strong>${learning.dislikedLabels.map(escapeHtml).join(', ')}</strong> get less weight based on your dismissals.</p>`);
+    if (learning.penalizedRepos?.length) parts.push(`<p>You’ve dismissed work in <strong>${learning.penalizedRepos.map(escapeHtml).join(', ')}</strong>; those repositories get less weight.</p>`);
+    parts.push(`<p>${c.merged || 0} merged PRs · ${c.completed || 0} completed · ${c.claimed || 0} claimed · ${c.dismissed || 0} dismissed.</p>`);
+    $('ranking-summary').innerHTML = parts.join('');
+  }
+  const reasons = Object.entries(learning?.dismissReasons || {}).sort((a,b)=>b[1]-a[1]);
+  const max = Math.max(1,...reasons.map(([,n])=>n));
+  $('dismissal-chart').innerHTML = reasons.length ? reasons.map(([reason,n])=>`<div class="chart-row"><span>${escapeHtml(reason)}</span><span class="chart-track" aria-hidden="true"><span style="width:${Math.round(n/max*100)}%"></span></span><span>${n}</span></div>`).join('') : '<p class="muted">No dismissal reasons recorded yet.</p>';
+  $('ranking-history').textContent = learning?.sampleSize ? `Based on ${learning.sampleSize} recorded outcomes. Telegram feedback is included.` : 'Your existing issue history stays available.';
+  $('reset-ranking-button').disabled = !learning?.sampleSize;
+}
+async function scan() {
+  if (state.running) return;
+  state.running = true; renderHeader();
+  showNotice('Scan started. You can keep browsing while it runs.');
+  try {
+    const result = await api('/api/scan',{method:'POST'});
+    if (result.queued || result.dispatched) {
+      showNotice('Scan queued. The history will update when results are available.');
+    } else {
+      await loadItems();
+      showNotice(`Scan complete. ${result.digest?.contest_digest?.length || result.run?.opportunities || 0} recommendations found.`);
+    }
+    await loadHealth();
+  } catch (error) { showNotice(`Scan failed: ${error.message}`,true); await loadHealth().catch(()=>{}); }
+  finally { state.running = false; renderHeader(); }
+}
+function routeHash(hash) {
+  if (hash.startsWith('#issue/')) { try { return {view:'issue',id:decodeURIComponent(hash.slice(7))}; } catch { return {view:'queue'}; } }
+  return {view:['#repos','#scans'].includes(hash) ? hash.slice(1) : 'queue'};
+}
+function showRoute(hash, force = false) {
+  if (!force && state.route === (hash || '#queue')) return;
+  const route = routeHash(hash);
+  if (state.view === 'issue' && state.dirty && !force && (route.view !== 'issue' || route.id !== state.selected)) {
+    state.pendingRoute = hash;
+    history.replaceState(null,'',state.route || '#queue');
+    $('leave-dialog').showModal();
+    return;
+  }
+  if (route.view === 'issue' && !state.loaded) return;
+  if (state.view === 'queue') state.queueScroll = window.scrollY;
+  const previousView = state.view;
+  state.view = route.view;
+  state.route = hash || '#queue';
+  showNotice();
+  ['queue','issue','repos','scans'].forEach(view => $(`${view}-view`).classList.toggle('hidden',view !== state.view));
+  document.querySelectorAll('.nav-link').forEach(link => {
+    const active = link.dataset.view === (state.view === 'issue' ? 'queue' : state.view);
+    if (active) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
+  });
+  if (state.view === 'issue') {
+    const item = state.items.find(item => item.id === route.id);
+    if (!item) { state.view = 'queue'; history.replaceState(null,'','#queue'); showRoute('#queue',true); showNotice('This issue is no longer in the saved queue.',true); return; }
+    if (previousView !== 'issue' || state.selected !== item.id) renderIssue(item);
+  }
+  renderHeader();
+  if (state.view === 'queue') { renderQueue(); requestAnimationFrame(()=>window.scrollTo(0,state.queueScroll)); }
+  else window.scrollTo(0,0);
+}
+function navigate(hash, force = false) {
+  if (state.dirty && state.view === 'issue' && !force) { showRoute(hash); return; }
+  if (location.hash !== hash) history.pushState(null,'',hash);
+  showRoute(hash,force);
+}
+async function init() {
+  const results = await Promise.allSettled([loadItems(),loadRepos(),loadHealth()]);
+  const error = results.find(result=>result.status==='rejected');
+  if (error) {
+    showNotice(error.reason.message,true);
+    if (!state.loaded) { $('queue-body').setAttribute('aria-busy','false'); $('queue-body').innerHTML = '<div class="empty-state"><strong>Couldn’t load your queue</strong><p>Check your connection or workspace key, then try again.</p><button class="button button-secondary" type="button" data-retry>Try again</button></div>'; }
+  } else {
+    showRoute(location.hash || '#queue',true);
+  }
+  $('access-button').textContent = state.key ? 'Workspace unlocked' : 'Workspace access';
+  fetch('/api/bitcoin-projects').then(response => response.ok ? response.json() : null).then(data=>{if(data){state.catalog=data;renderDirectory();}}).catch(()=>{});
+}
+
+$('detail-form').addEventListener('submit',event=>{event.preventDefault();saveIssue();});
+$('detail-form').addEventListener('input',event=>{if(event.target.id !== 'new-step' && event.target.id !== 'activity-note') {readDraft();setDirty();} else if(event.target.value.trim()) setDirty();});
+$('detail-form').addEventListener('change',event=>{
+  if(event.target.matches('[data-step]')) {state.draft.steps[Number(event.target.dataset.step)].done=event.target.checked;setDirty();$('plan-progress').textContent=`${state.draft.steps.filter(step=>step.done).length} of ${state.draft.steps.length} complete`;}
+});
+$('new-step').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addStep();}});
+$('add-step-button').addEventListener('click',addStep);
+$('add-note-button').addEventListener('click',addNote);
+$('analyze-button').addEventListener('click',analyzeIssue);
+$('copy-code-button').addEventListener('click',async()=>{try {await navigator.clipboard.writeText($('detail-code').textContent);toast('Code copied.');}catch{toast('Couldn’t copy automatically. Select the code to copy it.');}});
+$('repo-form').addEventListener('submit',inspectRepo);
+$('watchlist-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.currentTarget.querySelector('button');button.disabled=true;try{await watchRepo($('watchlist-input').value.trim());$('watchlist-input').value='';}catch(error){showNotice(error.message,true);}finally{button.disabled=false;}});
+$('dismiss-form').addEventListener('submit',dismissIssue);
+['priority','repo','sort'].forEach(filter=> $(`${filter}-filter`).addEventListener('change',event=>{state.filters[filter]=event.target.value;state.limit=20;renderQueue();}));
+$('search-input').addEventListener('input',event=>{state.filters.search=event.target.value;state.limit=20;renderQueue();});
+$('access-form').addEventListener('submit',event=>{event.preventDefault();state.key=$('access-key').value.trim();sessionStorage.setItem('danagent.apiKey',state.key);$('access-dialog').close('connect');});
+$('access-dialog').addEventListener('close',()=>{const resolve=state.accessResolve;const connected=$('access-dialog').returnValue==='connect';state.accessResolve=null;state.accessPromise=null;if(resolve)resolve(connected);});
+$('access-button').addEventListener('click',async()=>{if(await requestKey())init();});
+$('undo-button').addEventListener('click',async()=>{const undo=state.undo;if(!undo)return;$('undo-button').disabled=true;try{await undo();}catch(error){toast(error.message);}finally{$('undo-button').disabled=false;}});
+$('toast-close').addEventListener('click',()=>$('toast').classList.add('hidden'));
+$('stay-button').addEventListener('click',()=>{state.pendingRoute=null;$('leave-dialog').close();});
+$('discard-button').addEventListener('click',()=>{state.dirty=false;const next=state.pendingRoute;state.pendingRoute=null;$('leave-dialog').close();navigate(next,true);});
+$('save-leave-button').addEventListener('click',async()=>{if(await saveIssue()){const next=state.pendingRoute;state.pendingRoute=null;$('leave-dialog').close();navigate(next,true);}});
+$('reset-ranking-button').addEventListener('click',()=>$('reset-dialog').showModal());
+$('confirm-reset-button').addEventListener('click',async()=>{const button=$('confirm-reset-button');button.disabled=true;try{await api('/api/preferences',{method:'POST',body:JSON.stringify({action:'reset'})});await loadItems();$('reset-dialog').close();toast('Ranking adjustments reset. Your issue history is unchanged.');}catch(error){showNotice(error.message,true);}finally{button.disabled=false;}});
+window.addEventListener('popstate',()=>showRoute(location.hash));
+window.addEventListener('hashchange',()=>showRoute(location.hash));
+window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
+document.addEventListener('click',async event=>{
+  const link=event.target.closest('a[href^="#"]');
+  if(link && /^(#queue|#repos|#scans|#issue\/)/.test(link.getAttribute('href')) && !event.metaKey && !event.ctrlKey && !event.shiftKey){event.preventDefault();navigate(link.getAttribute('href'));return;}
+  const button=event.target.closest('button');
+  const row=event.target.closest('[data-issue]');
+  if(row && !event.target.closest('a,button')){navigate(`#issue/${encodeURIComponent(row.dataset.issue)}`);return;}
+  if(!button || button.disabled)return;
+  try{
+    if(button.hasAttribute('data-close-dialog'))button.closest('dialog').close('cancel');
+    if(button.hasAttribute('data-scan'))await scan();
+    if(button.hasAttribute('data-retry'))await init();
+    if(button.hasAttribute('data-more')){state.limit=state.items.length;renderQueue();}
+    if(button.dataset.status){state.filters.status=button.dataset.status;state.limit=20;renderQueue();}
+    if(button.hasAttribute('data-clear-filters')){state.filters={status:'Open',repo:'',priority:'',search:'',sort:'fit'};['priority','repo'].forEach(id=>$(`${id}-filter`).value='');$('sort-filter').value='fit';$('search-input').value='';renderQueue();}
+    if(button.hasAttribute('data-remove-step')){state.draft.steps.splice(Number(button.dataset.removeStep),1);setDirty();renderPlan();}
+    if(button.hasAttribute('data-dismiss'))$('dismiss-dialog').showModal();
+    if(button.hasAttribute('data-restore'))await restoreIssue();
+    if(button.dataset.watch){button.disabled=true;try{await watchRepo(button.dataset.watch);}catch(error){button.disabled=false;throw error;}}
+    if(button.dataset.toggleRepo)await toggleRepo(button.dataset.toggleRepo,button);
+    if(button.dataset.removeRepo)await removeRepo(button.dataset.removeRepo);
+    if(button.dataset.repoMatches){state.filters.repo=button.dataset.repoMatches;state.filters.status='Open';renderQueue();navigate('#queue');}
+    if(button.hasAttribute('data-area')){state.area=button.dataset.area;renderDirectory();}
+    if(button.dataset.runLog){const run=state.health.recentRuns?.find(run=>run.id===button.dataset.runLog);info('Scan details',`<pre>${escapeHtml(JSON.stringify(run,null,2))}</pre>`);}
+    if(button.hasAttribute('data-schedule'))info('Scan schedule',`<p>${escapeHtml(scheduleText())}.</p><p class="muted">Scheduled runs are managed by this deployment. Manual scans are available from Queue and Scans.</p>`);
+  }catch(error){showNotice(error.message,true);}
+});
+setInterval(()=>{if(state.view==='scans' || state.running)loadHealth().catch(()=>{});},15000);
 const STATE_LABELS = {
   available: ['Available', 'state-available'],
   claimed: ['Claimed by someone', 'state-taken'],
@@ -629,7 +549,7 @@ function analysisHtml(result) {
       <strong class="${stateClass}">${escapeHtml(stateLabel)}</strong>
       ${levelTag('Effort', a.effort)}
       ${levelTag('Impact', a.impact)}
-      ${a.confidence ? createTag(`Confidence ${a.confidence}%`) : ''}
+      ${a.confidence ? createTag(`Confidence ${escapeHtml(a.confidence)}%`) : ''}
       ${createTag(result.model === 'heuristic' ? 'Heuristic (no model)' : 'Model analysis')}
       ${when ? `<span class="save-status">${escapeHtml(when)}${result.cached ? ' · cached' : ''}</span>` : ''}
     </div>
@@ -650,14 +570,14 @@ function analysisHtml(result) {
 
   const prs = (ctx.pullRequests || []).length
     ? block('Linked pull requests', `<ul>${ctx.pullRequests.map(pr => `
-        <li><a href="${escapeHtml(pr.url)}" target="_blank" rel="noreferrer">${escapeHtml(pr.sameRepo === false && pr.repo ? `${pr.repo}#${pr.number}` : `#${pr.number}`)}</a> (${escapeHtml(pr.state)}${pr.author ? ` by ${escapeHtml(pr.author)}` : ''}) ${escapeHtml(pr.title || '')}</li>
+        <li><a href="${escapeHtml(safeUrl(pr.url))}" target="_blank" rel="noreferrer">${escapeHtml(pr.sameRepo === false && pr.repo ? `${pr.repo}#${pr.number}` : `#${pr.number}`)}</a> (${escapeHtml(pr.state)}${pr.author ? ` by ${escapeHtml(pr.author)}` : ''}) ${escapeHtml(pr.title || '')}</li>
       `).join('')}</ul>`)
     : '';
 
   const sources = (ctx.files || []).length
     ? block('Source consulted', `<ul>${ctx.files.map(file => `
-        <li><a href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer"><code>${escapeHtml(file.path)}</code></a> lines ${file.startLine}-${file.endLine} · ${escapeHtml(file.reason)}</li>
-      `).join('')}${ctx.contributing ? `<li><a href="${escapeHtml(ctx.contributing.url)}" target="_blank" rel="noreferrer">${escapeHtml(ctx.contributing.path)}</a></li>` : ''}</ul>`)
+        <li><a href="${escapeHtml(safeUrl(file.url))}" target="_blank" rel="noreferrer"><code>${escapeHtml(file.path)}</code></a> lines ${escapeHtml(file.startLine)}–${escapeHtml(file.endLine)} · ${escapeHtml(file.reason)}</li>
+      `).join('')}${ctx.contributing ? `<li><a href="${escapeHtml(safeUrl(ctx.contributing.url))}" target="_blank" rel="noreferrer">${escapeHtml(ctx.contributing.path)}</a></li>` : ''}</ul>`)
     : '';
 
   const conversation = (ctx.comments || []).length
@@ -687,401 +607,5 @@ function analysisHtml(result) {
   ].join('');
 }
 
-function renderDetailAnalysis(result) {
-  if (!result || !result.analysis) {
-    els.detailAnalysis.classList.add('hidden');
-    els.detailAnalysis.innerHTML = '';
-    return;
-  }
-  els.detailAnalysis.classList.remove('hidden');
-  els.detailAnalysis.innerHTML = analysisHtml(result);
-}
-
-async function requestIssueAnalysis(payload) {
-  const res = await authorizedFetch('/api/issue-analysis', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(await readErrorResponse(res));
-  }
-  return res.json();
-}
-
-// Workbench: analyze the selected opportunity, store it on the record, and
-// pre-fill the plan fields (left unsaved so the user stays in control).
-async function analyzeSelectedOpportunity() {
-  const item = state.opportunities.find(entry => entry.id === state.selectedId);
-  if (!item || !item.issueUrl) return;
-  const force = Boolean(item.analysis);
-  els.detailAnalyzeButton.disabled = true;
-  els.saveStatus.textContent = 'Reading the issue, thread, linked PRs, and source…';
-  try {
-    const result = await requestIssueAnalysis({ url: item.issueUrl, recordId: item.id, force });
-    item.analysis = result;
-    renderDetailAnalysis(result);
-    const a = result.analysis || {};
-    if (a.plan && a.plan.length) {
-      els.detailQuickPlan.value = a.plan.map((step, index) => `${index + 1}. ${step}`).join('\n');
-      if (!els.detailNextStep.value.trim()) {
-        els.detailNextStep.value = a.plan[0];
-      }
-    }
-    if (a.codeSkeleton) {
-      els.detailCode.textContent = a.codeSkeleton;
-    }
-    if (a.validation) {
-      els.detailTip.textContent = a.validation;
-    }
-    els.saveStatus.textContent = 'Analysis ready. Review the suggested plan, then save your changes.';
-    els.detailAnalyzeButton.textContent = 'Re-analyze issue';
-  } finally {
-    els.detailAnalyzeButton.disabled = false;
-  }
-}
-
-// Repo scout: analyze one issue card in place.
-async function analyzeRepoIssue(button) {
-  const url = button.dataset.url;
-  const card = button.closest('.repo-issue-card');
-  const target = card.querySelector('.repo-analysis-target');
-  button.disabled = true;
-  button.textContent = 'Analyzing…';
-  try {
-    const result = await requestIssueAnalysis({ url, force: button.dataset.force === 'true' });
-    target.classList.remove('hidden');
-    target.innerHTML = analysisHtml(result);
-    button.textContent = 'Re-analyze';
-    button.dataset.force = 'true';
-  } catch (error) {
-    target.classList.remove('hidden');
-    target.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
-    button.textContent = 'Analyze';
-  } finally {
-    button.disabled = false;
-  }
-}
-
-function renderRepoIssues(repo) {
-  els.repoResults.classList.remove('hidden');
-  const overview = repo.overview || {};
-  els.repoResultsName.textContent = overview.name || repo.repo;
-  els.repoResultsCount.textContent = `${repo.issues.length} open issues found`;
-
-  if (!repo.issues.length) {
-    els.repoIssuesList.innerHTML = '<div class="detail-empty">No open issues were found for this repository.</div>';
-    return;
-  }
-
-  const projectSummary = overview.projectSummary
-    ? `
-      <article class="repo-overview-card">
-        <div class="repo-overview-header">
-          <div>
-            <p class="eyebrow">Project overview</p>
-            <h4>${escapeHtml(overview.name || repo.repo)}</h4>
-          </div>
-          ${overview.url ? `<a href="${escapeHtml(overview.url)}" target="_blank" rel="noreferrer" class="button button-secondary">Open repo</a>` : ''}
-        </div>
-        <p>${escapeHtml(overview.projectSummary)}</p>
-        <div class="list-meta">
-          ${overview.language ? createTag(overview.language) : ''}
-          ${typeof overview.stars === 'number' ? createTag(`${overview.stars} stars`) : ''}
-          ${typeof overview.openIssues === 'number' ? createTag(`${overview.openIssues} open issues`) : ''}
-          ${(overview.topics || []).slice(0, 4).map(topic => createTag(escapeHtml(topic))).join('')}
-        </div>
-      </article>
-    `
-    : '';
-
-  const renderIssueCard = issue => `
-    <article class="repo-issue-card">
-      <div class="list-item-header">
-        <h4>${escapeHtml(issue.title)}</h4>
-        <div class="watchlist-actions">
-          <button type="button" class="button button-secondary repo-analyze-button" data-url="${escapeHtml(issue.url)}">Analyze</button>
-          <a href="${escapeHtml(issue.url)}" target="_blank" rel="noreferrer" class="button button-secondary">Open</a>
-        </div>
-      </div>
-      <section class="analysis-card repo-analysis-target hidden"></section>
-      <p>${escapeHtml((issue.body || '').slice(0, 180) || 'No issue description provided.')}</p>
-      <div class="list-meta">
-        ${createTag(`#${issue.number}`)}
-        ${createTag(issue.updatedAt ? issue.updatedAt.slice(0, 10) : 'Open')}
-        ${createTag(`${issue.issueFitScore || 0}/100`, `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
-        ${createTag(issue.issueFitLabel || 'Low fit', `fit-${statusClass(issue.issueFitLabel || 'low fit')}`)}
-        ${createTag(issue.issueComplexity || 'Medium', `complexity-${statusClass(issue.issueComplexity || 'medium')}`)}
-        ${issue.claim && issue.claim.claimed ? createTag(`Claimed: ${escapeHtml(issue.claim.reason)}`, 'fit-low-fit') : ''}
-        ${(issue.labels || []).slice(0, 4).map(label => createTag(escapeHtml(label))).join('')}
-      </div>
-      <p class="save-status">This estimate uses labels and discussion keywords. Analyze the issue to check the full thread, linked pull requests, and source files.</p>
-      <section class="repo-insight-block">
-        <h5>Issue fit score</h5>
-        <p>${escapeHtml(issue.issueFitReason || 'No fit rationale available yet.')}</p>
-      </section>
-      <div class="repo-insight-grid">
-        <section class="repo-insight-block">
-          <h5>What is happening</h5>
-          <p>${escapeHtml(issue.conversationSummary || 'No discussion summary available yet.')}</p>
-        </section>
-        <section class="repo-insight-block">
-          <h5>Likely requirements</h5>
-          <p>${escapeHtml(issue.expectationSummary || 'No expectation summary available yet.')}</p>
-        </section>
-      </div>
-      <section class="repo-insight-block">
-        <h5>Suggested starting steps</h5>
-        <ol class="repo-plan-list">
-          ${(issue.quickPlan || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}
-        </ol>
-      </section>
-      <section class="repo-insight-block">
-        <h5>Recent conversation</h5>
-        ${(issue.recentConversation || []).length ? `
-          <div class="repo-comment-list">
-            ${issue.recentConversation.map(comment => `
-              <article class="repo-comment">
-                <strong>${escapeHtml(comment.author)}</strong>
-                <span>${escapeHtml(comment.createdAt ? comment.createdAt.slice(0, 10) : '')}</span>
-                <p>${escapeHtml(comment.body)}</p>
-              </article>
-            `).join('')}
-          </div>
-        ` : '<p>No comments yet. The issue body is still the main source of context.</p>'}
-      </section>
-    </article>
-  `;
-
-  const recommended = repo.issues.filter(issue => issue.issueRecommendation === 'Recommended first PR');
-  const consider = repo.issues.filter(issue => issue.issueRecommendation === 'Worth considering');
-  const avoid = repo.issues.filter(issue => issue.issueRecommendation === 'Avoid for first pass');
-
-  const renderSection = (title, subtitle, issues) => issues.length ? `
-    <section class="repo-section">
-      <div class="repo-section-heading">
-        <div>
-          <p class="eyebrow">${escapeHtml(subtitle)}</p>
-          <h4>${escapeHtml(title)}</h4>
-        </div>
-      </div>
-      <div class="repo-issues-list">
-        ${issues.map(renderIssueCard).join('')}
-      </div>
-    </section>
-  ` : '';
-
-  els.repoIssuesList.innerHTML = [
-    projectSummary,
-    renderSection('Recommended first PRs', 'Best first pass', recommended),
-    renderSection('Worth considering next', 'Medium scope', consider),
-    renderSection('Avoid for first pass', 'Later work', avoid),
-  ].join('');
-
-  if (!recommended.length && !consider.length && !avoid.length) {
-    els.repoIssuesList.innerHTML = projectSummary;
-  }
-}
-
-async function checkRepoIssues(event) {
-  if (event) event.preventDefault();
-  const repo = els.repoInput.value.trim();
-  if (!repo) {
-    els.repoStatus.textContent = 'Enter a GitHub repo URL or owner/repo.';
-    return;
-  }
-
-  els.repoStatus.textContent = 'Checking repository issues';
-  const res = await authorizedFetch('/api/repo-issues', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repo }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to inspect repository');
-  }
-
-  renderRepoIssues(data.repo);
-  els.repoStatus.textContent = `Loaded ${data.repo.issues.length} issues for ${data.repo.repo}`;
-}
-
-async function inspectRepository(repo) {
-  document.getElementById('repo-check').open = true;
-  els.repoInput.value = repo;
-  await checkRepoIssues();
-}
-
-async function addRepositoryToWatchlist(event) {
-  event.preventDefault();
-  const repo = els.watchlistInput.value.trim();
-  if (!repo) {
-    els.watchlistStatus.textContent = 'Enter a GitHub repo URL or owner/repo.';
-    return;
-  }
-
-  els.watchlistStatus.textContent = 'Adding repository';
-  const res = await authorizedFetch('/api/repositories', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repo }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to add repository');
-  }
-
-  els.watchlistInput.value = '';
-  els.watchlistStatus.textContent = `${data.repository.repo} added to your watchlist.`;
-  await loadRepositories();
-  await inspectRepository(data.repository.repo);
-}
-
-async function removeRepository(id) {
-  els.watchlistStatus.textContent = 'Removing repository';
-  const res = await authorizedFetch(`/api/repositories/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to remove repository');
-  }
-  els.watchlistStatus.textContent = 'Repository removed from your watchlist.';
-  await loadRepositories();
-}
-
-async function saveCurrentOpportunity(event) {
-  event.preventDefault();
-  const item = state.opportunities.find(entry => entry.id === state.selectedId);
-  if (!item) return;
-
-  els.saveStatus.textContent = 'Saving...';
-
-  const payload = {
-    status: els.detailStatus.value,
-    priority: els.detailPriority.value,
-    owner: els.detailOwner.value.trim(),
-    dueDate: els.detailDueDate.value,
-    nextStep: els.detailNextStep.value.trim(),
-    prUrl: els.detailPrUrl.value.trim(),
-    activityLog: els.detailActivityLog.value.trim(),
-    quickPlan: els.detailQuickPlan.value.trim(),
-  };
-
-  const res = await authorizedFetch(`/api/opportunities/${encodeURIComponent(item.id)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to save changes');
-  }
-
-  const idx = state.opportunities.findIndex(entry => entry.id === item.id);
-  state.opportunities[idx] = data.opportunity;
-  renderStats();
-  applyFilters();
-  selectOpportunity(item.id);
-  els.saveStatus.textContent = 'Saved';
-}
-
-async function triggerScan() {
-  els.runScanButton.disabled = true;
-  els.scanStatus.textContent = 'Running scan';
-  try {
-    const res = await authorizedFetch('/api/scan', { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Scan failed');
-    }
-    await loadOpportunities();
-    await loadHealth();
-    els.scanStatus.textContent = `${data.reused ? 'Existing scan loaded' : 'Scan complete'} · ${data.digest?.contest_digest?.length || 0} issues found`;
-  } catch (error) {
-    els.scanStatus.textContent = error.message;
-  } finally {
-    els.runScanButton.disabled = false;
-  }
-}
-
-function wireEvents() {
-  const filterChanged = () => { state.currentPage = 1; applyFilters(); };
-  els.statusFilter.addEventListener('change', filterChanged);
-  els.priorityFilter.addEventListener('change', filterChanged);
-  els.searchInput.addEventListener('input', () => {
-    state.currentPage = 1;
-    applyFilters();
-  });
-  els.prevPageButton.addEventListener('click', () => {
-    if (state.currentPage > 1) {
-      state.currentPage -= 1;
-      renderList();
-    }
-  });
-  els.nextPageButton.addEventListener('click', () => {
-    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
-    if (state.currentPage < totalPages) {
-      state.currentPage += 1;
-      renderList();
-    }
-  });
-  els.list.addEventListener('click', event => {
-    if (event.target.closest('[data-clear-filters]')) {
-      els.statusFilter.value = '';
-      els.priorityFilter.value = '';
-      els.searchInput.value = '';
-      filterChanged();
-    }
-    if (event.target.closest('[data-run-scan]')) els.runScanButton.click();
-  });
-  els.detailForm.addEventListener('submit', event => {
-    saveCurrentOpportunity(event).catch(error => {
-      els.saveStatus.textContent = error.message;
-    });
-  });
-  els.repoForm.addEventListener('submit', event => {
-    checkRepoIssues(event).catch(error => {
-      els.repoStatus.textContent = error.message;
-    });
-  });
-  els.watchlistForm.addEventListener('submit', event => {
-    addRepositoryToWatchlist(event).catch(error => {
-      els.watchlistStatus.textContent = error.message;
-    });
-  });
-  els.detailAnalyzeButton.addEventListener('click', () => {
-    analyzeSelectedOpportunity().catch(error => {
-      els.saveStatus.textContent = error.message;
-      els.detailAnalyzeButton.disabled = false;
-    });
-  });
-  els.repoIssuesList.addEventListener('click', event => {
-    const button = event.target.closest('.repo-analyze-button');
-    if (button) analyzeRepoIssue(button);
-  });
-  els.runScanButton.addEventListener('click', () => {
-    triggerScan().catch(error => {
-      els.scanStatus.textContent = error.message;
-      els.runScanButton.disabled = false;
-    });
-  });
-}
-
-wireEvents();
-loadRepositories().catch(error => {
-  els.watchlistStatus.textContent = error.message;
-});
-loadOpportunities().catch(error => {
-  els.scanStatus.textContent = error.message;
-  els.list.setAttribute('aria-busy', 'false');
-  els.paginationSummary.textContent = 'Couldn’t load issues';
-  els.list.innerHTML = `<div class="detail-empty">${escapeHtml(error.message)}</div>`;
-});
-loadHealth().catch(error => {
-  els.lastRunSummary.textContent = error.message;
-});
-loadBitcoinProjects().catch(error => {
-  els.ecosystemStatus.textContent = error.message;
-});
+showRoute(location.hash || '#queue',true);
+init();
