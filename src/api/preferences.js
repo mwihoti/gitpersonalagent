@@ -1,8 +1,8 @@
 'use strict';
-const { listOpportunities, recordIssueEvents } = require('../src/airtable');
-const { deriveOutcome } = require('../src/feedback');
-const { requireApiAuth } = require('../src/auth');
-const { allowOptions, readJsonBody, sendJson } = require('../src/http');
+const { listOpportunities, recordIssueEvents } = require('../airtable');
+const { deriveOutcome } = require('../feedback');
+const { requireApiAuth } = require('../auth');
+const { allowOptions, readJsonBody, sendJson } = require('../http');
 
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;

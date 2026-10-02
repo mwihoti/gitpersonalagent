@@ -12,9 +12,9 @@ test('ranking reset requires access and preserves saved work and activity timest
   process.env.AIRTABLE_API_KEY = '';
   process.env.AIRTABLE_BASE_ID = '';
   process.env.DAN_AGENT_API_KEY = 'test-key';
-  for (const file of ['../src/config', '../src/airtable', '../src/auth', '../api/preferences']) delete require.cache[require.resolve(file)];
+  for (const file of ['../src/config', '../src/airtable', '../src/auth', '../src/api/preferences']) delete require.cache[require.resolve(file)];
   const airtable = require('../src/airtable');
-  const handler = require('../api/preferences');
+  const handler = require('../src/api/preferences');
   const { buildPreferenceModel } = require('../src/feedback');
   const [created] = await airtable.saveDigest({ date: '2026-10-01', contest_digest: [{ repo: 'a/b', opportunity: 'Test issue', issue_url: 'https://github.com/a/b/issues/1', effort: 'low' }] });
   const before = await airtable.updateOpportunity(created.id, { status: 'Done', activityLog: 'Dismissed [dismiss reason: too big]', quickPlan: '- [x] Reproduce\n- [ ] Fix' });

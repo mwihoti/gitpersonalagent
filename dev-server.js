@@ -5,8 +5,8 @@ const path = require('path');
 
 const scanHandler = require('./api/scan');
 const healthHandler = require('./api/health');
-const opportunitiesHandler = require('./api/opportunities/index');
-const opportunityHandler = require('./api/opportunities/[id]');
+const opportunitiesHandler = require('./src/api/opportunities');
+const opportunityHandler = require('./src/api/opportunity');
 const repositoriesHandler = require('./api/repositories/index');
 const repositoryHandler = require('./api/repositories/[id]');
 const repoIssuesHandler = require('./api/repo-issues');
@@ -14,7 +14,7 @@ const issueAnalysisHandler = require('./api/issue-analysis');
 const issueStatusHandler = require('./api/issue-status');
 const setupWebhookHandler = require('./api/setup-webhook');
 const bitcoinProjectsHandler = require('./api/bitcoin-projects');
-const preferencesHandler = require('./api/preferences');
+const preferencesHandler = require('./src/api/preferences');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);

@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/opportunities.js": {
+      "maxDuration": 60
+    },
     "api/scan.js": {
       "maxDuration": 60
     },
@@ -19,6 +22,16 @@
       "maxDuration": 60
     }
   },
+  "rewrites": [
+    {
+      "source": "/api/preferences",
+      "destination": "/api/opportunities?__action=preferences"
+    },
+    {
+      "source": "/api/opportunities/:id",
+      "destination": "/api/opportunities?id=:id"
+    }
+  ],
   "crons": [
     {
       "path": "/api/scan",
