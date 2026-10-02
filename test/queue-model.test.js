@@ -13,6 +13,14 @@ test('queue distinguishes dismissals, finished work, and upstream closures', () 
   assert.equal(Q.isOpen({ status: 'Done' }), false);
 });
 
+test('detail controls preserve legacy status spelling when editing a record', () => {
+  for (const status of ['In Progress', 'In progress', 'in progress', 'Working']) {
+    assert.equal(Q.editableStatus({ status }), 'In Progress');
+  }
+  assert.equal(Q.editableStatus({ status: 'done' }), 'Done');
+  assert.equal(Q.editableStatus({ status: 'New' }), 'New');
+});
+
 test('saved checklists retain completion and accept existing plain-text plans', () => {
   const steps = Q.parsePlan('1. Reproduce the issue\n- [x] Add a failing test\n- [ ] Fix the calculation');
   assert.deepEqual(steps, [{ text: 'Reproduce the issue', done: false }, { text: 'Add a failing test', done: true }, { text: 'Fix the calculation', done: false }]);

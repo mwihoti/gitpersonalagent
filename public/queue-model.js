@@ -17,6 +17,10 @@
     return /progress|active|doing|working/i.test(status) ? 'In Progress' : 'New';
   }
   function isOpen(item) { return ['New', 'In Progress'].includes(displayStatus(item)); }
+  function editableStatus(item) {
+    const status = displayStatus(item);
+    return status === 'In Progress' ? 'In Progress' : status === 'New' ? 'New' : 'Done';
+  }
   function parsePlan(value) {
     const lines = Array.isArray(value) ? value : String(value || '').split('\n');
     return lines.filter(line => String(line).trim()).map(line => {
@@ -63,5 +67,5 @@
         : { text: clean(line), at: '', who: '' };
     }).reverse();
   }
-  return { displayStatus, isOpen, parsePlan, serializePlan, availability, score, labels, filterIssues, initials, activityEntries };
+  return { displayStatus, isOpen, editableStatus, parsePlan, serializePlan, availability, score, labels, filterIssues, initials, activityEntries };
 });

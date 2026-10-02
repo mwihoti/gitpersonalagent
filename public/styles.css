@@ -127,6 +127,7 @@ td { padding: 15px 26px; border-bottom: 1px solid var(--line); font-size: 12px; 
 .fit-explanation { display: flex; gap: 22px; border: 1px solid var(--line); border-radius: 6px; padding: 20px; margin-top: 22px; align-items: center; }
 .fit-number { flex-shrink: 0; display: grid; gap: 4px; }
 .fit-number strong { font-size: 36px; letter-spacing: -.045em; line-height: 1.15; width: fit-content; background: linear-gradient(transparent 60%, var(--yellow) 60%); }
+.fit-number.is-unscored strong { background: none; color: var(--muted); }
 .fit-number span { color: var(--muted); font-size: 11px; }
 .fit-reasons { display: grid; gap: 8px; font-size: 13px; line-height: 1.65; }
 .detail-section { margin-top: 26px; }

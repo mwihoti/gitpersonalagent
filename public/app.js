@@ -183,9 +183,10 @@ function renderIssue(item) {
   const issue = item.analysis?.context?.issue;
   $('detail-summary').textContent = issue ? `Opened ${shortDate(issue.createdAt).toLowerCase()}${issue.author ? ` by ${issue.author}` : ''}. ${issue.commentsCount || 0} comments.` : `Tracked ${shortDate(item.date).toLowerCase()}.${item.issueUpdatedAt ? ` Last GitHub activity ${shortDate(item.issueUpdatedAt, true).toLowerCase()}.` : ''}`;
   $('detail-score').textContent = Q.score(item) || '—';
+  $('detail-score').parentElement.classList.toggle('is-unscored', !Q.score(item));
   const reasons = [...new Set([item.whyItQualifies, a.maintainerWants || item.maintainerWants, a.stateReason].filter(Boolean))];
   $('detail-reasons').innerHTML = reasons.length ? reasons.map(reason => `<p>${escapeHtml(reason)}</p>`).join('') : '<p class="muted">No ranking explanation is saved. Analyze the issue to inspect the discussion.</p>';
-  $('detail-status').value = item.status === 'In Progress' ? 'In Progress' : /done|closed/i.test(item.status) ? 'Done' : 'New';
+  $('detail-status').value = Q.editableStatus(item);
   $('detail-priority').value = item.priority || 'Medium';
   $('detail-owner').value = item.owner || '';
   $('detail-due').value = item.dueDate || '';
@@ -225,9 +226,9 @@ async function saveIssue({ dismiss = false } = {}) {
   if ($('activity-note').value.trim()) addNote();
   const original = state.items.find(item => item.id === state.selected);
   const previousLog = state.draft.activityLog;
-  if (original && original.status !== state.draft.status) appendActivity(`Status changed to ${state.draft.status}`);
+  if (original && Q.editableStatus(original) !== state.draft.status) appendActivity(`Status changed to ${state.draft.status}`);
   if (original && original.priority !== state.draft.priority) appendActivity(`Priority changed to ${state.draft.priority}`);
-  if (!dismiss && original?.status !== 'Done' && state.draft.status === 'Done') appendActivity('Marked done [outcome completed]');
+  if (!dismiss && original && Q.editableStatus(original) !== 'Done' && state.draft.status === 'Done') appendActivity('Marked done [outcome completed]');
   const payload = { status: state.draft.status, priority: state.draft.priority, owner: state.draft.owner, dueDate: state.draft.dueDate, prUrl: state.draft.prUrl, nextStep: state.draft.nextStep, quickPlan: Q.serializePlan(state.draft.steps), activityLog: state.draft.activityLog };
   renderHeader();
   try {
