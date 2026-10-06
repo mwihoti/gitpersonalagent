@@ -505,6 +505,42 @@ automatically.
 
 ---
 
+## Checking a repository
+
+Opening a repository on the Repos page, or pressing **Check**, lists **every
+open issue**, not a sample. Issues are fetched page by page (pull requests
+are removed, since GitHub counts them as issues) and ranked by a quick score
+from labels, age, comment count, description, and assignees.
+
+Reading an issue closely costs two GitHub requests (its comments and the
+timeline of linked pull requests), so that is done for one batch at a time:
+
+- the best 20 by quick score are read in detail on first load, which adds the
+  latest comment, linked PRs, and detection of "I'll take this" claims;
+- everything else is listed with a **Quick score** tag (only assignees show up
+  as claims at that level);
+- **Read the next 20 in detail** reads the following batch without repeating
+  the first, and keeps what you already loaded;
+- the list can be filtered by title, label, or number, and claimed issues can
+  be hidden. Issues already in your queue link to their record.
+
+`INSPECT_MAX_ITEMS` (default 1000, so up to ten GitHub requests) bounds the
+walk for huge repositories; when it applies the page says so. Scheduled
+`/scan all` runs still read only the best 20 per repository in detail, but now
+choose them from the whole list instead of the 20 most recently updated.
+
+The "In your queue" count in the repository list is the number of saved
+records for that repo that are still open. It is not the repository's issue
+count; open the repo to see that.
+
+Scoring note: GitHub returns labels as objects, and the fit score used to read
+them as text, which made every label bonus (good first issue, help wanted,
+bug, docs, enhancement) silently inactive for live issues. They now apply, so
+scores for labelled issues are higher than before, and the score bands used by
+`/scan medium` shift with them.
+
+---
+
 ## What the daily digest contains
 
 The digest is a changelog, not a snapshot. Before the model runs, the scan

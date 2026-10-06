@@ -6,7 +6,7 @@ const safeUrl = value => { try { const url = new URL(value); return ['http:', 'h
 const createTag = (label, className = '') => `<span class="tag ${className}">${label}</span>`;
 const state = {
   items: [], repos: [], health: {}, learning: null, catalog: null, area: '', inspection: null,
-  repoChoice: '', repoLimit: 12,
+  repoChoice: '', repoLimit: 12, inspectView: { query: '', hideClaimed: false, limit: 25 }, inspectBusy: false,
   filters: { status: 'Open', repo: '', priority: '', search: '', sort: 'fit' }, limit: 20,
   view: 'queue', selected: null, draft: null, dirty: false, saving: false, running: false,
   loaded: false, queueScroll: 0, route: '', pendingRoute: null, undo: null,
@@ -310,16 +310,16 @@ function renderRepos() {
     ['In your queue', choices.filter(repo => !repo.watching && repo.totalIssues)],
     ['Project directory', choices.filter(repo => !repo.watching && !repo.totalIssues)],
   ];
-  $('repo-picker').innerHTML = '<option value="">Select a repository…</option>' + groups.filter(([, repos]) => repos.length).map(([label, repos]) => `<optgroup label="${label}">${repos.map(repo => `<option value="${escapeHtml(repo.repo)}">${escapeHtml(repo.repo)}${repo.openMatches ? ` · ${repo.openMatches} open issues` : ''}</option>`).join('')}</optgroup>`).join('');
+  $('repo-picker').innerHTML = '<option value="">Select a repository…</option>' + groups.filter(([, repos]) => repos.length).map(([label, repos]) => `<optgroup label="${label}">${repos.map(repo => `<option value="${escapeHtml(repo.repo)}">${escapeHtml(repo.repo)}${repo.openMatches ? ` · ${repo.openMatches} in your queue` : ''}</option>`).join('')}</optgroup>`).join('');
   $('repo-picker').value = state.repoChoice;
   const tracked = choices.filter(repo => repo.watching || repo.totalIssues);
   const visible = tracked.slice(0, state.repoLimit);
   if (!tracked.length) {
     $('watched-repos').innerHTML = '<div class="empty-state"><strong>Choose your first repository</strong><p>Select a project above to check its issues, or enter any GitHub repository.</p></div>';
   } else {
-    $('watched-repos').innerHTML = `<table class="repo-table"><caption class="sr-only">Repositories in your queue and watchlist</caption><colgroup><col class="repo-name-col"><col><col><col><col><col class="repo-actions-col"></colgroup><thead><tr><th scope="col">Repository</th><th scope="col">Open matches</th><th scope="col">Best fit now</th><th scope="col">Last scanned</th><th scope="col">Included in scans</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${visible.map(repo => {
+    $('watched-repos').innerHTML = `<table class="repo-table"><caption class="sr-only">Repositories in your queue and watchlist</caption><colgroup><col class="repo-name-col"><col><col><col><col><col class="repo-actions-col"></colgroup><thead><tr><th scope="col">Repository</th><th scope="col">In your queue</th><th scope="col">Best fit now</th><th scope="col">Last scanned</th><th scope="col">Included in scans</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${visible.map(repo => {
       const run = runs.find(run => run.status === 'completed' && run.repositoryNames?.includes(repo.repo));
-      return `<tr><td class="repo-name"><button type="button" class="repo-choose" data-choose-repo="${escapeHtml(repo.repo)}">${escapeHtml(repo.repo)}</button></td><td><button type="button" class="text-button" data-repo-matches="${escapeHtml(repo.repo)}" aria-label="Show ${repo.openMatches} open matches in ${escapeHtml(repo.repo)}">${repo.openMatches}</button></td><td>${scoreHtml({score:repo.bestScore},false)}</td><td class="muted">${repo.watching && repo.enabled === false ? 'Paused' : run ? escapeHtml(shortDate(run.startedAt,true)) : 'Not recorded'}</td><td>${repo.watching ? `<button type="button" class="switch" role="switch" aria-checked="${repo.enabled !== false}" aria-label="Include ${escapeHtml(repo.repo)} in scans" data-toggle-repo="${escapeHtml(repo.id)}"></button>` : '<span class="muted">Not watching</span>'}</td><td>${repo.watching ? `<button class="text-button" type="button" data-remove-repo="${escapeHtml(repo.id)}">Remove</button>` : `<button class="text-button" type="button" data-watch="${escapeHtml(repo.repo)}">Watch</button>`}</td></tr>`;
+      return `<tr><td class="repo-name"><button type="button" class="repo-choose" data-choose-repo="${escapeHtml(repo.repo)}">${escapeHtml(repo.repo)}</button></td><td><button type="button" class="text-button" data-repo-matches="${escapeHtml(repo.repo)}" aria-label="Show the ${repo.openMatches} issues from ${escapeHtml(repo.repo)} in your queue">${repo.openMatches}</button></td><td>${scoreHtml({score:repo.bestScore},false)}</td><td class="muted">${repo.watching && repo.enabled === false ? 'Paused' : run ? escapeHtml(shortDate(run.startedAt,true)) : 'Not recorded'}</td><td>${repo.watching ? `<button type="button" class="switch" role="switch" aria-checked="${repo.enabled !== false}" aria-label="Include ${escapeHtml(repo.repo)} in scans" data-toggle-repo="${escapeHtml(repo.id)}"></button>` : '<span class="muted">Not watching</span>'}</td><td>${repo.watching ? `<button class="text-button" type="button" data-remove-repo="${escapeHtml(repo.id)}">Remove</button>` : `<button class="text-button" type="button" data-watch="${escapeHtml(repo.repo)}">Watch</button>`}</td></tr>`;
     }).join('')}</tbody></table>`;
   }
   $('repos-pagination').innerHTML = tracked.length ? `<span>Showing ${visible.length} of ${tracked.length} repositories in your queue and watchlist.</span>${visible.length < tracked.length ? '<button class="text-button" type="button" data-more-repos>Show the rest</button>' : ''}` : '';
@@ -340,30 +340,73 @@ async function chooseRepo(repo) {
   state.repoChoice = repo;
   $('repo-picker').value = repo;
   const choice = repositoryChoices().find(choice => choice.repo.toLowerCase() === repo.toLowerCase());
-  if (choice?.openMatches) { openRepoQueue(choice.repo); return; }
   $('repo-input').value = choice?.repo || repo;
   document.querySelector('.repo-inspection').scrollIntoView({ block: 'start', behavior: 'smooth' });
   await inspectRepo({ preventDefault() {}, currentTarget: $('repo-form') });
 }
+function inspectionRow({ issue, claimed, queued }) {
+  const url = safeUrl(issue.url);
+  const shown = (issue.labels || []).slice(0, 3).map(label => labelHtml(typeof label === 'string' ? label : label.name)).join('');
+  const meta = [
+    issue.updatedAt ? `updated ${age(issue.updatedAt)} ago` : '',
+    issue.comments ? `${issue.comments} comment${issue.comments === 1 ? '' : 's'}` : '',
+    issue.latestComment?.author ? `last by ${escapeHtml(issue.latestComment.author)}` : '',
+  ].filter(Boolean).join(' · ');
+  const flags = [
+    queued ? `<a class="tag tag-good" href="#issue/${encodeURIComponent(queued.id)}">In your queue</a>` : '',
+    claimed ? createTag(escapeHtml(`Claimed: ${issue.claim.reason}`), 'tag-warn') : '',
+    issue.claim?.stale ? createTag('Stale claim', 'tag-warn') : '',
+    issue.detailChecked ? '' : createTag('Quick score', ''),
+  ].join('');
+  return `<div class="inspected-issue${claimed ? ' is-claimed' : ''}">${scoreHtml({ score: issue.issueFitScore }, false)}<div class="inspected-body"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer"><span class="muted">#${escapeHtml(issue.number)}</span> ${escapeHtml(issue.title)}</a><div class="inspected-meta">${shown}${meta ? `<span class="muted">${meta}</span>` : ''}${flags}</div></div></div>`;
+}
+function renderInspectionList() {
+  const repo = state.inspection;
+  if (!repo || !$('inspect-list')) return;
+  const view = Q.inspectionView(repo, state.items, state.inspectView);
+  const total = repo.totalOpenIssues ?? view.total;
+  const filtered = view.matching !== view.total;
+  $('inspect-list').innerHTML = view.rows.map(inspectionRow).join('')
+    || `<p class="muted">${view.total ? 'No issues match these filters.' : 'This repository has no open issues.'}</p>`;
+  const unread = view.total - view.checked;
+  const note = repo.truncated
+    ? `Listing the ${repo.openItems} most recently updated open items (issues and pull requests together); this repository has more.`
+    : '';
+  $('inspect-footer').innerHTML = `<p class="inspection-footer">Showing ${view.rows.length} of ${filtered ? `${view.matching} matching (${view.total} total)` : view.total} open issues. ${view.checked} read in detail; the other ${unread} are scored from labels, age, and activity only. ${note}</p><div class="inspect-actions">${view.remaining ? `<button class="button button-secondary" type="button" data-inspect-more>Show ${Math.min(25, view.remaining)} more</button>` : ''}${unread ? `<button class="button button-secondary" type="button" data-inspect-detail ${state.inspectBusy ? 'disabled' : ''}>${state.inspectBusy ? 'Reading…' : `Read the next ${Math.min(20, unread)} in detail`}</button>` : ''}</div>`;
+  $('inspect-count').textContent = filtered ? `${view.matching} of ${total}` : `${total}`;
+}
 function renderInspection() {
   const repo = state.inspection;
   const overview = repo.overview || {};
-  const issues = repo.issues || [];
-  const candidates = issues.filter(issue => !issue.claim?.claimed);
-  const sorted = [...candidates].sort((a,b) => Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0));
   const watched = state.repos.some(item => item.repo.toLowerCase() === repo.repo.toLowerCase());
-  const good = issues.filter(issue => (issue.labels || []).some(label => /good first issue/i.test(typeof label === 'string' ? label : label.name))).length;
-  $('repo-inspection-result').innerHTML = `<div class="inspection-header"><div><h2>${escapeHtml(repo.repo)}</h2><p>${escapeHtml(overview.description || overview.projectSummary || '')}</p></div><button class="button" type="button" data-watch="${escapeHtml(repo.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button></div><div class="repo-metrics"><div><strong>${typeof overview.openIssues === 'number' ? overview.openIssues : issues.length}</strong><span>${typeof overview.openIssues === 'number' ? 'open issues + PRs' : 'issues checked'}</span></div><div><strong>${good}</strong><span>good first issues checked</span></div><div><strong>${candidates.filter(issue => Number(issue.issueFitScore)>=70).length}</strong><span>matches above 70</span></div><div><strong>${escapeHtml(overview.language || '—')}</strong><span>primary language</span></div></div>${sorted.slice(0,5).map(issue => `<div class="inspected-issue">${scoreHtml({score:issue.issueFitScore},false)}<a href="${escapeHtml(safeUrl(issue.url))}" target="_blank" rel="noreferrer"><span class="muted">#${escapeHtml(issue.number)}</span> ${escapeHtml(issue.title)}</a></div>`).join('') || '<p class="muted">No unclaimed open issues were found in this check.</p>'}<p class="inspection-footer">${issues.length} issues checked. Fit estimates use labels and discussion; analyze an issue to check its current requirements.</p>`;
+  const view = Q.inspectionView(repo, state.items, { limit: 0 });
+  const total = repo.totalOpenIssues ?? view.total;
+  const pulls = typeof overview.openIssues === 'number' && !repo.truncated ? Math.max(0, overview.openIssues - total) : 0;
+  const queuedHere = repositoryChoices().find(choice => choice.repo.toLowerCase() === repo.repo.toLowerCase())?.openMatches || 0;
+  $('repo-inspection-result').innerHTML = `<div class="inspection-header"><div><h2>${escapeHtml(repo.repo)}</h2><p>${escapeHtml(overview.description || overview.projectSummary || '')}</p></div><div class="inspection-buttons">${queuedHere ? `<button class="button button-secondary" type="button" data-view-queue="${escapeHtml(repo.repo)}">${queuedHere} in your queue</button>` : ''}<button class="button" type="button" data-watch="${escapeHtml(repo.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button></div></div><div class="repo-metrics"><div><strong>${total}</strong><span>open issues${pulls ? ` (plus ${pulls} pull requests)` : ''}</span></div><div><strong>${view.goodFirst}</strong><span>good first issue${view.goodFirst === 1 ? '' : 's'}</span></div><div><strong>${view.strong}</strong><span>unclaimed matches above 70</span></div><div><strong>${escapeHtml(overview.language || '—')}</strong><span>primary language</span></div></div><div class="inspect-toolbar"><label class="sr-only" for="inspect-search">Filter issues</label><input id="inspect-search" type="search" placeholder="Filter by title, label, or number" value="${escapeHtml(state.inspectView.query)}"><label class="check"><input id="inspect-hide-claimed" type="checkbox" ${state.inspectView.hideClaimed ? 'checked' : ''}> Hide claimed</label><span class="muted"><span id="inspect-count"></span> shown</span></div><div id="inspect-list"></div><div id="inspect-footer"></div>`;
+  renderInspectionList();
+}
+async function inspectMoreDetail() {
+  const repo = state.inspection;
+  if (!repo || state.inspectBusy) return;
+  state.inspectBusy = true;
+  renderInspectionList();
+  try {
+    const next = (await api('/api/repo-issues', { method: 'POST', body: JSON.stringify({ repo: repo.repo, skip: repo.detailDepth || repo.detailChecked || 0, detail: 20 }) })).repo;
+    state.inspection = Q.mergeInspection(repo, next);
+  } catch (error) { toast(error.message); }
+  finally { state.inspectBusy = false; renderInspectionList(); }
 }
 async function inspectRepo(event) {
   event.preventDefault();
   const button = event.currentTarget.querySelector('button');
   button.disabled = true;
-  $('repo-check-status').textContent = 'Checking open issues…';
+  $('repo-check-status').textContent = 'Listing every open issue…';
   try {
     state.inspection = (await api('/api/repo-issues',{method:'POST',body:JSON.stringify({repo:$('repo-input').value.trim()})})).repo;
+    state.inspectView = { query: '', hideClaimed: false, limit: 25 };
     renderInspection();
-    $('repo-check-status').textContent = `Checked ${state.inspection.repo}.`;
+    $('repo-check-status').textContent = `Listed ${state.inspection.totalOpenIssues ?? state.inspection.issues.length} open issues in ${state.inspection.repo}.`;
   } catch (error) { $('repo-check-status').textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -521,6 +564,12 @@ $('confirm-reset-button').addEventListener('click',async()=>{const button=$('con
 window.addEventListener('popstate',()=>showRoute(location.hash));
 window.addEventListener('hashchange',()=>showRoute(location.hash));
 window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
+document.addEventListener('input',event=>{
+  if(event.target.id==='inspect-search'){state.inspectView.query=event.target.value;state.inspectView.limit=25;renderInspectionList();}
+});
+document.addEventListener('change',event=>{
+  if(event.target.id==='inspect-hide-claimed'){state.inspectView.hideClaimed=event.target.checked;state.inspectView.limit=25;renderInspectionList();}
+});
 document.addEventListener('click',async event=>{
   const link=event.target.closest('a[href^="#"]');
   if(link && /^(#queue|#repos|#scans|#issue\/)/.test(link.getAttribute('href')) && !event.metaKey && !event.ctrlKey && !event.shiftKey){event.preventDefault();navigate(link.getAttribute('href'));return;}
@@ -543,6 +592,9 @@ document.addEventListener('click',async event=>{
     if(button.dataset.toggleRepo)await toggleRepo(button.dataset.toggleRepo,button);
     if(button.dataset.removeRepo)await removeRepo(button.dataset.removeRepo);
     if(button.dataset.repoMatches)openRepoQueue(button.dataset.repoMatches);
+    if(button.dataset.viewQueue)openRepoQueue(button.dataset.viewQueue);
+    if(button.hasAttribute('data-inspect-more')){state.inspectView.limit+=25;renderInspectionList();}
+    if(button.hasAttribute('data-inspect-detail'))await inspectMoreDetail();
     if(button.dataset.chooseRepo)await chooseRepo(button.dataset.chooseRepo);
     if(button.hasAttribute('data-area')){state.area=button.dataset.area;renderDirectory();}
     if(button.dataset.runLog){const run=state.health.recentRuns?.find(run=>run.id===button.dataset.runLog);info('Scan details',`<pre>${escapeHtml(JSON.stringify(run,null,2))}</pre>`);}

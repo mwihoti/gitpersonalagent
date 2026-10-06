@@ -82,6 +82,52 @@
       return score(b) - score(a) || String(b.date).localeCompare(String(a.date));
     });
   }
+  function normalizeUrl(value) { return String(value || '').trim().toLowerCase().replace(/\/+$/, ''); }
+  function isClaimed(issue) { return Boolean(issue && issue.claim && issue.claim.claimed); }
+  function byFit(a, b) {
+    return (Number(b.issueFitScore) || 0) - (Number(a.issueFitScore) || 0)
+      || String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+  }
+  // Fold a fresh listing into what is already on screen. An issue the user has
+  // already read in detail keeps that detail when the new listing only has a
+  // quick score for it, so "read the next 20" adds to the view instead of
+  // replacing it.
+  function mergeInspection(previous, next) {
+    if (!next) return previous || null;
+    if (!previous || previous.repo !== next.repo) return next;
+    const known = new Map((previous.issues || []).map(issue => [issue.number, issue]));
+    const issues = (next.issues || []).map(issue => {
+      const before = known.get(issue.number);
+      return !issue.detailChecked && before && before.detailChecked ? before : issue;
+    }).sort(byFit);
+    return { ...next, issues, detailChecked: issues.filter(issue => issue.detailChecked).length };
+  }
+  // What the repo check shows for the current filters: every issue is
+  // reachable, rows are paged, and each carries its place in the user's queue.
+  function inspectionView(repo, queueItems = [], options = {}) {
+    const { query = '', hideClaimed = false, limit = 25 } = options;
+    const queued = new Map(queueItems.filter(item => item.issueUrl).map(item => [normalizeUrl(item.issueUrl), item]));
+    const needle = String(query).toLowerCase().trim().replace(/^#/, '');
+    const all = (repo.issues || []).map(issue => ({ issue, claimed: isClaimed(issue), queued: queued.get(normalizeUrl(issue.url)) || null }));
+    const matching = all.filter(row => {
+      if (hideClaimed && row.claimed) return false;
+      if (!needle) return true;
+      const text = [row.issue.title, String(row.issue.number), ...labels(row.issue), row.issue.claim && row.issue.claim.reason].join(' ').toLowerCase();
+      return text.includes(needle);
+    });
+    const open = all.filter(row => !row.claimed);
+    return {
+      rows: matching.slice(0, limit),
+      matching: matching.length,
+      total: all.length,
+      claimed: all.length - open.length,
+      goodFirst: all.filter(row => labels(row.issue).some(label => /good first issue/i.test(label))).length,
+      strong: open.filter(row => (Number(row.issue.issueFitScore) || 0) >= 70).length,
+      checked: all.filter(row => row.issue.detailChecked).length,
+      queuedCount: all.filter(row => row.queued).length,
+      remaining: Math.max(0, matching.length - limit),
+    };
+  }
   function initials(value) { return String(value || '').split(/[\s._-]+/).map(part => part[0]).join('').slice(0, 2).toUpperCase(); }
   function activityEntries(value) {
     const clean = text => text.replace(/\s*\[(?:ranking baseline:|outcome |dismiss reason:)[^\]]+\]/gi, '').trim();
@@ -93,5 +139,5 @@
         : { text: clean(line), at: '', who: '' };
     }).reverse();
   }
-  return { displayStatus, isOpen, editableStatus, parsePlan, serializePlan, availability, score, labels, repositoryChoices, filterIssues, initials, activityEntries };
+  return { displayStatus, isOpen, editableStatus, parsePlan, serializePlan, availability, score, labels, repositoryChoices, filterIssues, initials, activityEntries, mergeInspection, inspectionView };
 });
