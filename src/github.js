@@ -1,6 +1,6 @@
 'use strict';
 const config = require('./config');
-const { buildIssueInsight, buildRepoOverview, detectClaim, stripMarkdown } = require('./repo-insights');
+const { buildIssueFitScore, buildIssueInsight, buildRepoOverview, detectClaim, stripMarkdown } = require('./repo-insights');
 const { classifyRepo } = require('./bitcoin-ecosystem');
 
 const DAYS_BACK = 30; // general recent activity window
@@ -136,6 +136,54 @@ async function fetchOpenIssues(repo, perPage = 30) {
   }
   const data = await res.json();
   return data.filter(i => !i.pull_request);
+}
+
+function envInt(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+// Every open issue, page by page. GitHub counts pull requests as issues, so a
+// repository reporting 90 open items may have 28 real issues; pull requests
+// are dropped here. INSPECT_MAX_ITEMS (default 1000, so ten requests) bounds
+// the walk for very large repositories, and `truncated` says when it bit.
+async function fetchAllOpenIssues(repo, options = {}) {
+  const { maxItems = envInt('INSPECT_MAX_ITEMS', 1000), perPage = 100 } = options;
+  const issues = [];
+  let fetchedItems = 0;
+  let truncated = false;
+
+  for (let page = 1; ; page += 1) {
+    const params = new URLSearchParams({
+      state: 'open',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: String(perPage),
+      page: String(page),
+    });
+    const res = await githubRequest(`https://api.github.com/repos/${repo}/issues?${params}`);
+    if (!res.ok) {
+      if (page === 1) {
+        throw new Error(`GitHub issue list failed for ${repo}: ${await getGitHubErrorMessage(res)}`);
+      }
+      console.warn(`  GitHub ${repo} (open, page ${page}): ${res.status}; showing what was fetched`);
+      truncated = true;
+      break;
+    }
+    const batch = await res.json();
+    if (!Array.isArray(batch) || !batch.length) break;
+    fetchedItems += batch.length;
+    for (const item of batch) {
+      if (!item.pull_request) issues.push(item);
+    }
+    if (batch.length < perPage) break;
+    if (fetchedItems >= maxItems) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return { issues, fetchedItems, truncated };
 }
 
 // Good first issues — any age, always worth surfacing
@@ -529,7 +577,11 @@ async function scanRepos(repos = [], options = {}) {
       const result = await scanRepo(repo, {
         mode,
         seedIssues: seedIssuesByRepo[repo] || [],
+        detail: options.detail || 20,
       });
+      // The full listing is for people browsing a repo. A scan feeds a model
+      // and a digest, so it keeps only the issues that were read in detail.
+      if (mode === 'all-open') result.issues = result.issues.filter(issue => issue.detailChecked);
       console.log(`    → ${result.issues.length} issues (${result.labelSummary})`);
       results.push(result);
     } catch (error) {
@@ -550,20 +602,84 @@ async function scanRepos(repos = [], options = {}) {
   return results;
 }
 
+// Lists every open issue of a repository and reads the best of them closely.
+//
+// Reading an issue closely costs two GitHub requests (its comments and the
+// timeline of linked pull requests), so that is done for one batch, chosen
+// from the whole list by a cheap score built from the list data alone: labels,
+// age, comment count, description, assignees. Everything else is still listed,
+// marked detailChecked: false. `skip` and `detail` select the batch, which is
+// how a caller asks for "the next 20" without paying for the first 20 again.
+async function listAllOpenIssues(repo, { repoDetails, openList, decorateIssue, detail, skip }) {
+  const ranked = openList.issues
+    .map(issue => {
+      const decorated = decorateIssue(issue);
+      // An assignee is visible in the list payload; comment and PR claims need the detail pass.
+      const claim = detectClaim(decorated, [], []);
+      return { issue: decorated, claim, fit: buildIssueFitScore({ ...decorated, claim }, []) };
+    })
+    .sort((a, b) => b.fit.issueFitScore - a.fit.issueFitScore
+      || String(b.issue.updated_at || '').localeCompare(String(a.issue.updated_at || '')));
+
+  const batch = new Set(ranked.slice(skip, skip + detail).map(entry => entry.issue.number));
+
+  const issues = await Promise.all(ranked.map(async ({ issue, claim, fit }) => {
+    if (!batch.has(issue.number)) {
+      return {
+        ...shape(issue, [], [], claim),
+        body: String(issue.body || '').slice(0, 160),
+        ...fit,
+        detailChecked: false,
+      };
+    }
+    const [comments, linkedPRs] = await Promise.all([
+      fetchIssueComments(issue),
+      fetchLinkedPullRequests(repo, issue.number).catch(() => []),
+    ]);
+    const checkedClaim = detectClaim(issue, comments, linkedPRs);
+    return {
+      ...shape(issue, comments, linkedPRs, checkedClaim),
+      ...buildIssueInsight({ ...issue, claim: checkedClaim, linkedPRs }, comments),
+      detailChecked: true,
+    };
+  }));
+
+  issues.sort((a, b) => Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0)
+    || String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+
+  const goodFirst = issues.filter(issue => issue.labels.some(label => /good first issue/i.test(label))).length;
+  return {
+    repo,
+    repoUrl: `https://github.com/${repo}`,
+    overview: buildRepoOverview(repoDetails),
+    totalOpenIssues: issues.length,
+    openItems: openList.fetchedItems,
+    truncated: openList.truncated,
+    detailChecked: batch.size,
+    detailDepth: skip + batch.size,
+    issues,
+    recentPRs: [],
+    labelSummary: [`${issues.length} open`, goodFirst ? `${goodFirst} good-first` : ''].filter(Boolean).join(', '),
+  };
+}
+
 async function scanRepo(repo, options = {}) {
   const {
     mode = 'prioritized',
     seedIssues = [],
+    detail = 20,
+    skip = 0,
   } = options;
+  const allOpen = mode === 'all-open';
 
-  const [repoDetails, recent, goodFirst, bugs, recentPRs, openIssues, seeded] = await Promise.all([
+  const [repoDetails, recent, goodFirst, bugs, recentPRs, openList, seeded] = await Promise.all([
     fetchRepoDetails(repo),
-    fetchRecentIssues(repo),
-    fetchGoodFirstIssues(repo),
-    fetchBugIssues(repo),
-    fetchRecentPRActivity(repo),
-    mode === 'all-open' ? fetchOpenIssues(repo, 50) : Promise.resolve([]),
-    Promise.all(seedIssues.map(async seed => {
+    allOpen ? Promise.resolve([]) : fetchRecentIssues(repo),
+    allOpen ? Promise.resolve([]) : fetchGoodFirstIssues(repo),
+    allOpen ? Promise.resolve([]) : fetchBugIssues(repo),
+    allOpen ? Promise.resolve([]) : fetchRecentPRActivity(repo),
+    allOpen ? fetchAllOpenIssues(repo) : Promise.resolve(null),
+    allOpen ? Promise.resolve([]) : Promise.all(seedIssues.map(async seed => {
       const issue = await fetchIssueByNumber(repo, seed.number);
       if (!issue) return null;
       return {
@@ -591,14 +707,22 @@ async function scanRepo(repo, options = {}) {
     bitcoinAreaSource: bitcoinArea.source,
   });
 
-  const sourceIssues = mode === 'all-open'
-    ? openIssues
-    : dedup([
-      ...seeded.filter(Boolean),
-      ...goodFirst.map(issue => ({ ...issue, source: issue.source || 'github-label' })),
-      ...bugs.map(issue => ({ ...issue, source: issue.source || 'github-bug' })),
-      ...recent.map(issue => ({ ...issue, source: issue.source || 'github-recent' })),
-    ]).slice(0, 20);
+  if (allOpen) {
+    return listAllOpenIssues(repo, {
+      repoDetails,
+      openList,
+      decorateIssue,
+      detail: Math.max(0, Math.min(60, Number(detail) || 0)),
+      skip: Math.max(0, Number(skip) || 0),
+    });
+  }
+
+  const sourceIssues = dedup([
+    ...seeded.filter(Boolean),
+    ...goodFirst.map(issue => ({ ...issue, source: issue.source || 'github-label' })),
+    ...bugs.map(issue => ({ ...issue, source: issue.source || 'github-bug' })),
+    ...recent.map(issue => ({ ...issue, source: issue.source || 'github-recent' })),
+  ]).slice(0, 20);
 
   const merged = dedup(sourceIssues).slice(0, 20).map(decorateIssue);
   const issues = await Promise.all(merged.map(async issue => {
@@ -626,7 +750,7 @@ async function scanRepo(repo, options = {}) {
     repo,
     repoUrl: `https://github.com/${repo}`,
     overview: buildRepoOverview(repoDetails),
-    totalOpenIssues: mode === 'all-open' ? openIssues.length : recent.length,
+    totalOpenIssues: recent.length,
     issues,
     recentPRs,
     labelSummary: labelSummary || 'recent activity',
@@ -636,6 +760,7 @@ async function scanRepo(repo, options = {}) {
 module.exports = {
   scanRepos,
   scanRepo,
+  fetchAllOpenIssues,
   assertRepositoryAccessible,
   fetchIssueStatus,
   fetchLinkedPullRequests,

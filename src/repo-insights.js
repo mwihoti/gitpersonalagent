@@ -1,6 +1,15 @@
 'use strict';
 const { preferredAreas } = require('./bitcoin-ecosystem');
 
+// GitHub returns labels as { name } objects, other callers pass plain strings.
+// String(object) is "[object Object]", which silently disabled every label
+// bonus (good first issue, help wanted, bug, docs) for live issues.
+function labelNames(labels) {
+  return (labels || [])
+    .map(label => String(typeof label === 'string' ? label : (label && label.name) || '').toLowerCase().trim())
+    .filter(Boolean);
+}
+
 function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -60,7 +69,7 @@ function collectSignalLines(issue, comments) {
 }
 
 function inferExpectation(issue, comments) {
-  const labels = new Set((issue.labels || []).map(label => String(label).toLowerCase()));
+  const labels = new Set(labelNames(issue.labels));
   const text = `${issue.title}\n${issue.body}\n${comments.map(comment => comment.body).join('\n')}`;
   const cleaned = stripMarkdown(text);
 
@@ -90,7 +99,7 @@ function inferExpectation(issue, comments) {
 function inferQuickPlan(issue, comments) {
   const signalLines = collectSignalLines(issue, comments);
   const firstSignal = signalLines[0] || truncate(issue.title);
-  const labels = new Set((issue.labels || []).map(label => String(label).toLowerCase()));
+  const labels = new Set(labelNames(issue.labels));
 
   const steps = [
     `Check the issue and related files for this requirement: ${firstSignal}`,
@@ -286,7 +295,7 @@ function scoreBitcoinArea(issue, reasons) {
 }
 
 function buildIssueFitScore(issue, comments = []) {
-  const labels = new Set((issue.labels || []).map(label => String(label).toLowerCase()));
+  const labels = new Set(labelNames(issue.labels));
   const text = stripMarkdown(`${issue.title}\n${issue.body}\n${comments.map(comment => comment.body).join('\n')}`);
   const reasons = [];
   let score = 50;
@@ -430,6 +439,7 @@ function buildIssueInsight(issue, comments = []) {
 }
 
 module.exports = {
+  labelNames,
   detectClaim,
   buildIssueInsight,
   buildRepoOverview,

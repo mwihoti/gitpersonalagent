@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildIssueFitScore, buildIssueInsight, buildRepoOverview } = require('../src/repo-insights');
+const { buildIssueFitScore, buildIssueInsight, buildRepoOverview, labelNames } = require('../src/repo-insights');
 
 test('buildRepoOverview creates a readable project summary', () => {
   const overview = buildRepoOverview({
@@ -65,5 +65,20 @@ test('buildIssueFitScore prefers scoped, active, contributor-friendly issues', (
   assert.match(strong.issueFitLabel, /High fit|Medium fit/);
   assert.equal(strong.issueRecommendation, 'Recommended first PR');
   assert.match(strong.issueComplexity, /Quick win|Medium/);
-  assert.equal(weak.issueRecommendation, 'Avoid for first pass');
+  // The enhancement label now counts (+4); a vague design request must still
+  // be nowhere near a recommended first PR.
+  assert.notEqual(weak.issueRecommendation, 'Recommended first PR');
+  assert.ok(strong.issueFitScore - weak.issueFitScore >= 30, `gap ${strong.issueFitScore - weak.issueFitScore}`);
+});
+
+test('label bonuses apply to GitHub label objects exactly as to plain strings', () => {
+  const base = { title: 'Add examples', body: 'Please add examples for the bindings so users can learn the API quickly.', comments: 2, updated_at: new Date().toISOString() };
+  const asObjects = buildIssueFitScore({ ...base, labels: [{ name: 'good first issue' }, { name: 'help wanted' }] }, []);
+  const asStrings = buildIssueFitScore({ ...base, labels: ['good first issue', 'help wanted'] }, []);
+  const none = buildIssueFitScore({ ...base, labels: [] }, []);
+
+  assert.equal(asObjects.issueFitScore, asStrings.issueFitScore);
+  assert.ok(asObjects.issueFitScore > none.issueFitScore);
+  assert.match(asObjects.issueFitReason, /good first issue label/);
+  assert.deepEqual(labelNames([{ name: 'Bug' }, 'Help Wanted', null, {}, { name: ' docs ' }]), ['bug', 'help wanted', 'docs']);
 });
