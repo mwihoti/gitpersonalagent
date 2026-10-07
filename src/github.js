@@ -35,6 +35,58 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+class GitHubRateLimitError extends Error {
+  constructor(url) {
+    super(`GitHub rate limit reached while reading ${url}`);
+    this.rateLimited = true;
+  }
+}
+
+function rateLimitSecondsLeft() {
+  return rateLimitedUntil > Date.now() ? Math.ceil((rateLimitedUntil - Date.now()) / 1000) : 0;
+}
+
+// What this process currently knows about its own GitHub access, so a page
+// can say "your token was rejected" instead of silently running anonymous.
+function githubAuthState() {
+  return {
+    configured: Boolean(config.github.token),
+    rejected: authDisabledForRun,
+    rateLimitedFor: rateLimitSecondsLeft(),
+  };
+}
+
+let authCheckCache = null;
+
+// Asks GitHub whether the configured token works. The rate_limit endpoint is
+// free (it does not count against the limit). Cached for a minute.
+async function checkGitHubAuth({ force = false } = {}) {
+  if (!force && authCheckCache && Date.now() - authCheckCache.at < 60_000) return authCheckCache.value;
+  let value;
+  if (!config.github.token) {
+    value = { token: false, status: 'anonymous', limit: 60 };
+  } else {
+    try {
+      const res = await fetch('https://api.github.com/rate_limit', {
+        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${config.github.token}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.status === 401) {
+        value = { token: true, status: 'rejected', detail: 'GitHub says the token is invalid or expired; requests run anonymously (60 per hour).' };
+      } else if (!res.ok) {
+        value = { token: true, status: 'unknown', httpStatus: res.status };
+      } else {
+        const core = (await res.json()).resources?.core || {};
+        value = { token: true, status: 'ok', limit: core.limit, remaining: core.remaining, resetsAt: core.reset ? new Date(core.reset * 1000).toISOString() : '' };
+      }
+    } catch (error) {
+      value = { token: true, status: 'unknown', detail: error.message };
+    }
+  }
+  authCheckCache = { at: Date.now(), value };
+  return value;
+}
+
 function rateLimitResponse(url) {
   const resetIn = Math.max(0, Math.round((rateLimitedUntil - Date.now()) / 1000));
   return {
@@ -266,9 +318,11 @@ async function assertRepositoryAccessible(repo) {
 }
 
 // Returns the latest N comments in chronological order (oldest first).
+// With { strict: true } a rate-limited response throws instead of looking like
+// "no comments", so callers can tell "nothing there" from "could not read".
 // The per-issue comments endpoint ignores sort/direction, so we ask for the
 // last page and keep its tail.
-async function fetchIssueComments(issue, limit = 5) {
+async function fetchIssueComments(issue, limit = 5, options = {}) {
   const total = Number(issue.comments || 0);
   if (!total || !issue.comments_url) return [];
 
@@ -280,16 +334,22 @@ async function fetchIssueComments(issue, limit = 5) {
 
   const res = await githubRequest(`${issue.comments_url}?${params}`);
 
-  if (!res.ok) return [];
+  if (!res.ok) {
+    if (options.strict && res.rateLimited) throw new GitHubRateLimitError(issue.comments_url);
+    return [];
+  }
   const comments = await res.json();
   return Array.isArray(comments) ? comments.slice(-limit) : [];
 }
 
 // Pull requests that reference this issue, via the timeline API.
-async function fetchLinkedPullRequests(repo, number) {
+async function fetchLinkedPullRequests(repo, number, options = {}) {
   if (process.env.GITHUB_FETCH_TIMELINE === 'false') return [];
   const res = await githubRequest(`https://api.github.com/repos/${repo}/issues/${number}/timeline?per_page=100`);
-  if (!res.ok) return [];
+  if (!res.ok) {
+    if (options.strict && res.rateLimited) throw new GitHubRateLimitError(`${repo}#${number}`);
+    return [];
+  }
   const events = await res.json();
   if (!Array.isArray(events)) return [];
 
@@ -623,25 +683,37 @@ async function listAllOpenIssues(repo, { repoDetails, openList, decorateIssue, d
 
   const batch = new Set(ranked.slice(skip, skip + detail).map(entry => entry.issue.number));
 
+  let rateLimited = false;
+  const quickEntry = (issue, claim, fit) => ({
+    ...shape(issue, [], [], claim),
+    body: String(issue.body || '').slice(0, 160),
+    ...fit,
+    detailChecked: false,
+  });
+
   const issues = await Promise.all(ranked.map(async ({ issue, claim, fit }) => {
-    if (!batch.has(issue.number)) {
+    if (!batch.has(issue.number)) return quickEntry(issue, claim, fit);
+    try {
+      const [comments, linkedPRs] = await Promise.all([
+        fetchIssueComments(issue, 5, { strict: true }),
+        fetchLinkedPullRequests(repo, issue.number, { strict: true }).catch(error => {
+          if (error.rateLimited) throw error;
+          return [];
+        }),
+      ]);
+      const checkedClaim = detectClaim(issue, comments, linkedPRs);
       return {
-        ...shape(issue, [], [], claim),
-        body: String(issue.body || '').slice(0, 160),
-        ...fit,
-        detailChecked: false,
+        ...shape(issue, comments, linkedPRs, checkedClaim),
+        ...buildIssueInsight({ ...issue, claim: checkedClaim, linkedPRs }, comments),
+        detailChecked: true,
       };
+    } catch (error) {
+      if (!error.rateLimited) throw error;
+      // Not read, so do not pretend it was: no comments and no linked PRs here
+      // would read as "nobody has claimed this".
+      rateLimited = true;
+      return quickEntry(issue, claim, fit);
     }
-    const [comments, linkedPRs] = await Promise.all([
-      fetchIssueComments(issue),
-      fetchLinkedPullRequests(repo, issue.number).catch(() => []),
-    ]);
-    const checkedClaim = detectClaim(issue, comments, linkedPRs);
-    return {
-      ...shape(issue, comments, linkedPRs, checkedClaim),
-      ...buildIssueInsight({ ...issue, claim: checkedClaim, linkedPRs }, comments),
-      detailChecked: true,
-    };
   }));
 
   issues.sort((a, b) => Number(b.issueFitScore || 0) - Number(a.issueFitScore || 0)
@@ -655,8 +727,11 @@ async function listAllOpenIssues(repo, { repoDetails, openList, decorateIssue, d
     totalOpenIssues: issues.length,
     openItems: openList.fetchedItems,
     truncated: openList.truncated,
-    detailChecked: batch.size,
-    detailDepth: skip + batch.size,
+    detailChecked: issues.filter(issue => issue.detailChecked).length,
+    // After a rate limit the next "read more" retries this batch instead of skipping it.
+    detailDepth: rateLimited ? skip : skip + batch.size,
+    rateLimited,
+    github: githubAuthState(),
     issues,
     recentPRs: [],
     labelSummary: [`${issues.length} open`, goodFirst ? `${goodFirst} good-first` : ''].filter(Boolean).join(', '),
@@ -761,6 +836,9 @@ module.exports = {
   scanRepos,
   scanRepo,
   fetchAllOpenIssues,
+  checkGitHubAuth,
+  githubAuthState,
+  GitHubRateLimitError,
   assertRepositoryAccessible,
   fetchIssueStatus,
   fetchLinkedPullRequests,

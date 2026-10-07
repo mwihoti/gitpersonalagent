@@ -83,6 +83,10 @@ async function loadHealth() {
   const bots = state.health.config?.telegramBots || 0;
   $('telegram-status').innerHTML = `<i aria-hidden="true"></i>${bots ? 'Telegram configured' : 'Telegram not configured'}`;
   $('telegram-status').classList.toggle('configured', !!bots);
+  const github = state.health.config?.githubAuth?.status;
+  if (github === 'rejected' || github === 'anonymous') showNotice(github === 'rejected'
+    ? 'GitHub rejected the server’s access token, so issue lookups are limited to 60 an hour. Replace GITHUB_TOKEN in the hosting settings.'
+    : 'No GitHub token is set, so issue lookups are limited to 60 an hour. Add GITHUB_TOKEN in the hosting settings.', true);
   renderScans(); renderRepos(); renderHeader();
 }
 function updateCounts() {
@@ -369,9 +373,12 @@ function renderInspectionList() {
   $('inspect-list').innerHTML = view.rows.map(inspectionRow).join('')
     || `<p class="muted">${view.total ? 'No issues match these filters.' : 'This repository has no open issues.'}</p>`;
   const unread = view.total - view.checked;
-  const note = repo.truncated
-    ? `Listing the ${repo.openItems} most recently updated open items (issues and pull requests together); this repository has more.`
-    : '';
+  const minutes = Math.max(1, Math.ceil((repo.github?.rateLimitedFor || 0) / 60));
+  const note = [
+    repo.truncated ? `Listing the ${repo.openItems} most recently updated open items (issues and pull requests together); this repository has more.` : '',
+    repo.rateLimited ? `GitHub’s rate limit was reached, so some issues could not be read in detail${repo.github?.rateLimitedFor ? `; it resets in about ${minutes} minute${minutes === 1 ? '' : 's'}` : ''}.` : '',
+    repo.github?.rejected ? 'The server’s GitHub token was rejected, so these requests ran anonymously.' : '',
+  ].filter(Boolean).join(' ');
   $('inspect-footer').innerHTML = `<p class="inspection-footer">Showing ${view.rows.length} of ${filtered ? `${view.matching} matching (${view.total} total)` : view.total} open issues. ${view.checked} read in detail; the other ${unread} are scored from labels, age, and activity only. ${note}</p><div class="inspect-actions">${view.remaining ? `<button class="button button-secondary" type="button" data-inspect-more>Show ${Math.min(25, view.remaining)} more</button>` : ''}${unread ? `<button class="button button-secondary" type="button" data-inspect-detail ${state.inspectBusy ? 'disabled' : ''}>${state.inspectBusy ? 'Reading…' : `Read the next ${Math.min(20, unread)} in detail`}</button>` : ''}</div>`;
   $('inspect-count').textContent = filtered ? `${view.matching} of ${total}` : `${total}`;
 }
