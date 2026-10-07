@@ -111,10 +111,11 @@ function mockRepoWithIssues(t, { total = 130, env = {} } = {}) {
       if (env.FAIL_LIST) return respond(403, { message: 'API rate limit exceeded' });
       return respond(200, items.slice((page - 1) * perPage, page * perPage));
     }
+    const limited = () => ({ ok: false, status: 403, headers: { get: name => (name === 'x-ratelimit-remaining' ? '0' : name === 'x-ratelimit-reset' ? String(Math.floor(Date.now() / 1000) + 1800) : null) }, json: async () => ({ message: 'rate limit' }), text: async () => 'rate limit' });
     const comments = target.match(/\/issues\/(\d+)\/comments/);
-    if (comments) { log.comments.push(Number(comments[1])); return respond(200, []); }
+    if (comments) { log.comments.push(Number(comments[1])); return env.LIMIT_DETAIL ? limited() : respond(200, []); }
     const timeline = target.match(/\/issues\/(\d+)\/timeline/);
-    if (timeline) { log.timelines.push(Number(timeline[1])); return respond(200, []); }
+    if (timeline) { log.timelines.push(Number(timeline[1])); return env.LIMIT_DETAIL ? limited() : respond(200, []); }
     return respond(404, { message: 'not mocked' });
   };
 
@@ -208,4 +209,52 @@ test('scheduled scans keep only the issues that were read in detail', async t =>
   assert.ok(result.issues.every(issue => issue.detailChecked));
   assert.ok(result.issues.some(issue => issue.number === 7), 'the best issue overall is included, not just the newest');
   assert.equal(result.totalOpenIssues, 104);
+});
+
+test('issues that could not be read because of a rate limit are not marked as read', async t => {
+  mockRepoWithIssues(t, { env: { LIMIT_DETAIL: '1' } });
+  const { scanRepo, githubAuthState } = loadGithubModule();
+
+  const result = await scanRepo('o/r', { mode: 'all-open', detail: 20, skip: 40 });
+
+  assert.equal(result.rateLimited, true);
+  assert.equal(result.detailChecked, 0, 'nothing was actually read');
+  assert.equal(result.issues.filter(issue => issue.detailChecked).length, 0);
+  assert.equal(result.issues.length, 104, 'the list itself is still complete');
+  assert.equal(result.detailDepth, 40, 'the next "read more" retries this batch instead of skipping it');
+  assert.ok(result.github.rateLimitedFor > 1700 && result.github.rateLimitedFor <= 1800);
+  assert.equal(githubAuthState().rateLimitedFor, result.github.rateLimitedFor);
+  assert.ok(result.issues.every(issue => !issue.claim.claimed || /assigned/.test(issue.claim.reason)), 'no claim is inferred from missing data');
+});
+
+test('checkGitHubAuth tells a working token from a rejected one and from none', async t => {
+  const prevFetch = global.fetch;
+  t.after(() => { global.fetch = prevFetch; delete process.env.GITHUB_TOKEN; });
+  const calls = [];
+  const reply = status => async (url, options) => {
+    calls.push({ url: String(url), auth: options.headers.Authorization });
+    return { ok: status === 200, status, json: async () => ({ resources: { core: { limit: 5000, remaining: 4990, reset: 1790000000 } } }) };
+  };
+
+  process.env.GITHUB_TOKEN = 'dead';
+  global.fetch = reply(401);
+  let github = loadGithubModule();
+  const rejected = await github.checkGitHubAuth();
+  assert.equal(rejected.status, 'rejected');
+  assert.match(rejected.detail, /60 per hour/);
+  assert.equal(calls[0].url, 'https://api.github.com/rate_limit');
+  assert.equal(calls[0].auth, 'Bearer dead');
+
+  global.fetch = reply(200);
+  github = loadGithubModule();
+  const ok = await github.checkGitHubAuth();
+  assert.deepEqual([ok.status, ok.limit, ok.remaining], ['ok', 5000, 4990]);
+  const before = calls.length;
+  await github.checkGitHubAuth();
+  assert.equal(calls.length, before, 'cached for a minute');
+
+  delete process.env.GITHUB_TOKEN;
+  github = loadGithubModule();
+  const none = await github.checkGitHubAuth();
+  assert.deepEqual([none.status, none.limit], ['anonymous', 60]);
 });
