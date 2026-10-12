@@ -3,7 +3,10 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const DEFAULT_ISSUES_URL = 'https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue';
-const DEFAULT_MAX_REPOS = 12;
+// Every project on the page is scanned by default. BITCOINDEVS_MAX_REPOS caps
+// it (0 or unset means all); the ceiling only stops a broken page from
+// turning one scan into hundreds of repositories.
+const REPO_CEILING = 100;
 const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
   ? path.join('/tmp', 'danagent-data')
   : path.join(__dirname, '..', 'data'));
@@ -16,7 +19,7 @@ function getIssuesUrl() {
 
 function getMaxRepos() {
   const parsed = Number.parseInt(process.env.BITCOINDEVS_MAX_REPOS || '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_REPOS;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, REPO_CEILING) : REPO_CEILING;
 }
 
 function unescapeHydrationPayload(html) {
@@ -123,6 +126,10 @@ async function saveBitcoinDevsDiscovery(discovery) {
   return next[0];
 }
 
+// The page ships its whole dataset in the HTML and paginates in the browser,
+// so one request sees everything. Projects come from every record on the
+// page, whatever its labels; only the good-first-issue records are kept as
+// seed issues, which keeps the number of single-issue lookups small.
 async function fetchBitcoinDevsIssues(options = {}) {
   const url = options.url || getIssuesUrl();
   const maxRepos = options.maxRepos || getMaxRepos();
@@ -139,15 +146,17 @@ async function fetchBitcoinDevsIssues(options = {}) {
   }
 
   const html = await res.text();
-  const issues = parseBitcoinDevsIssues(html);
-  const repos = repositoriesFromIssues(issues, maxRepos);
+  const everything = parseBitcoinDevsIssues(html, { requiredLabel: '' });
+  const goodFirst = everything.filter(issue => issue.labels.some(label => label.toLowerCase() === 'good first issue'));
+  const repos = repositoriesFromIssues(everything, maxRepos);
   const repoSet = new Set(repos.map(repo => repo.toLowerCase()));
   return {
     discoveredAt: new Date().toISOString(),
     source: 'bitcoindevs',
     sourceUrl: url,
     repos,
-    issues: issues.filter(issue => repoSet.has(issue.repo.toLowerCase())),
+    issues: goodFirst.filter(issue => repoSet.has(issue.repo.toLowerCase())),
+    listedIssues: everything.length,
   };
 }
 

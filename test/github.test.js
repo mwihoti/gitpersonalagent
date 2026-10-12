@@ -109,7 +109,9 @@ function mockRepoWithIssues(t, { total = 130, env = {} } = {}) {
       const perPage = Number(params.get('per_page') || 30);
       log.pages.push(page);
       if (env.FAIL_LIST) return respond(403, { message: 'API rate limit exceeded' });
-      return respond(200, items.slice((page - 1) * perPage, page * perPage));
+      const wanted = params.get('labels');
+      const pool = wanted ? items.filter(item => item.labels.some(label => label.name === wanted)) : items;
+      return respond(200, pool.slice((page - 1) * perPage, page * perPage));
     }
     const limited = () => ({ ok: false, status: 403, headers: { get: name => (name === 'x-ratelimit-remaining' ? '0' : name === 'x-ratelimit-reset' ? String(Math.floor(Date.now() / 1000) + 1800) : null) }, json: async () => ({ message: 'rate limit' }), text: async () => 'rate limit' });
     const comments = target.match(/\/issues\/(\d+)\/comments/);
@@ -257,4 +259,28 @@ test('checkGitHubAuth tells a working token from a rejected one and from none', 
   github = loadGithubModule();
   const none = await github.checkGitHubAuth();
   assert.deepEqual([none.status, none.limit], ['anonymous', 60]);
+});
+
+test('a scan ranks a wide pool from list data and reads only the best few issues per repo', async t => {
+  const log = mockRepoWithIssues(t);
+  const { scanRepo } = loadGithubModule();
+
+  const result = await scanRepo('o/r', { mode: 'prioritized' });
+
+  assert.equal(result.issues.length, 10, 'SCAN_DETAIL_PER_REPO defaults to 10');
+  assert.equal(log.timelines.length, 10, 'two requests per read issue, not twenty issues');
+  assert.ok(result.issues.every(issue => issue.detailChecked !== false));
+  assert.ok(result.issues.some(issue => issue.number === 7), 'the labelled issue is chosen although it is far from the newest');
+  assert.equal(result.issues[0].number, 7);
+
+  log.timelines.length = 0;
+  process.env.SCAN_DETAIL_PER_REPO = '4';
+  t.after(() => { delete process.env.SCAN_DETAIL_PER_REPO; });
+  const smaller = await scanRepo('o/r', { mode: 'prioritized' });
+  assert.equal(smaller.issues.length, 4);
+  assert.equal(log.timelines.length, 4);
+
+  log.timelines.length = 0;
+  const explicit = await scanRepo('o/r', { mode: 'prioritized', detail: 6 });
+  assert.equal(explicit.issues.length, 6);
 });
