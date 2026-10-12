@@ -3,7 +3,6 @@ name: Weekly Bitcoin OSS Digest
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   BITCOINDEVS_ISSUES_URL: https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue
-  BITCOINDEVS_MAX_REPOS: 12
   BITCOINDEVS_DISCOVERY: true
   DIGEST_MODE: weekly
 

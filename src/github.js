@@ -637,7 +637,7 @@ async function scanRepos(repos = [], options = {}) {
       const result = await scanRepo(repo, {
         mode,
         seedIssues: seedIssuesByRepo[repo] || [],
-        detail: options.detail || 20,
+        ...(options.detail ? { detail: options.detail } : {}),
       });
       // The full listing is for people browsing a repo. A scan feeds a model
       // and a digest, so it keeps only the issues that were read in detail.
@@ -742,10 +742,14 @@ async function scanRepo(repo, options = {}) {
   const {
     mode = 'prioritized',
     seedIssues = [],
-    detail = 20,
+    detail: requestedDetail,
     skip = 0,
   } = options;
   const allOpen = mode === 'all-open';
+  // Reading an issue closely costs two requests. A repository check reads 20;
+  // a scan across many repositories reads the best few of each, because the
+  // digest uses only a handful per repository anyway.
+  const detail = requestedDetail ?? (allOpen ? 20 : envInt('SCAN_DETAIL_PER_REPO', 10));
 
   const [repoDetails, recent, goodFirst, bugs, recentPRs, openList, seeded] = await Promise.all([
     fetchRepoDetails(repo),
@@ -792,14 +796,22 @@ async function scanRepo(repo, options = {}) {
     });
   }
 
-  const sourceIssues = dedup([
+  // A wider pool than will be read: candidates are ranked from list data
+  // alone (labels, age, comments, assignees, BitcoinDevs source), and only the
+  // best `detail` are read closely.
+  const pool = dedup([
     ...seeded.filter(Boolean),
     ...goodFirst.map(issue => ({ ...issue, source: issue.source || 'github-label' })),
     ...bugs.map(issue => ({ ...issue, source: issue.source || 'github-bug' })),
     ...recent.map(issue => ({ ...issue, source: issue.source || 'github-recent' })),
-  ]).slice(0, 20);
+  ]).slice(0, 40).map(decorateIssue);
 
-  const merged = dedup(sourceIssues).slice(0, 20).map(decorateIssue);
+  const merged = pool
+    .map(issue => ({ issue, fit: buildIssueFitScore({ ...issue, claim: detectClaim(issue, [], []) }, []) }))
+    .sort((a, b) => b.fit.issueFitScore - a.fit.issueFitScore
+      || String(b.issue.updated_at || '').localeCompare(String(a.issue.updated_at || '')))
+    .slice(0, Math.max(1, detail))
+    .map(entry => entry.issue);
   const issues = await Promise.all(merged.map(async issue => {
     const [comments, linkedPRs] = await Promise.all([
       fetchIssueComments(issue),

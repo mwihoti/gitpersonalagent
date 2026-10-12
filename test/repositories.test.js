@@ -16,6 +16,7 @@ async function loadRepositoriesModule(t) {
   delete process.env.BITCOINDEVS_DISCOVERY;
   delete process.env.BITCOINDEVS_ISSUES_URL;
   delete process.env.BITCOINDEVS_MAX_REPOS;
+  delete process.env.BITCOINDEVS_MODE;
   const modulePath = path.resolve(__dirname, '..', 'src', 'repositories.js');
   const githubPath = path.resolve(__dirname, '..', 'src', 'github.js');
   const bitcoinDevsPath = path.resolve(__dirname, '..', 'src', 'bitcoindevs.js');
@@ -104,11 +105,12 @@ test('getScanRepositories falls back to BitcoinDevs when watchlist is empty', as
   assert.deepEqual(repos, ['bitcoin/bitcoin', 'payjoin/rust-payjoin']);
 });
 
-test('pausing repositories persists and excludes them without falling back to discovery', async t => {
+test('in fallback mode, pausing repositories persists and excludes them without falling back to discovery', async t => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({ ok: true, json: async () => ({}) });
-  t.after(() => { global.fetch = originalFetch; });
+  t.after(() => { global.fetch = originalFetch; delete process.env.BITCOINDEVS_MODE; });
   const repositories = await loadRepositoriesModule(t);
+  process.env.BITCOINDEVS_MODE = 'fallback';
   const first = await repositories.addRepository('bitcoin/bitcoin');
   const second = await repositories.addRepository('rust-bitcoin/rust-bitcoin');
   assert.equal(first.enabled, true);
@@ -138,4 +140,95 @@ test('concurrent repository changes preserve additions and pause state', async t
   assert.equal(all.length, 3);
   assert.equal(all.find(repo => repo.id === first.id).enabled, false);
   assert.equal(new Set(all.map(repo => repo.id)).size, 3);
+});
+
+// ── discovery merged with the watchlist ──────────────────────────────────────
+
+const record = (repo, number, labels, date = '2026-09-01T00:00:00Z') =>
+  `{\\"url\\":\\"https://github.com/${repo}/issues/${number}\\",\\"publishedAt\\":\\"${date}\\",\\"title\\":\\"Issue ${number}\\",\\"labels\\":[${labels.map(l => `\\"${l}\\"`).join(',')}],\\"number\\":${number}}`;
+
+function mockWorld(t, { page, fail = false } = {}) {
+  const originalFetch = global.fetch;
+  const pageRequests = [];
+  global.fetch = async url => {
+    if (String(url).includes('bitcoindevs.xyz')) {
+      pageRequests.push(String(url));
+      if (fail) throw new Error('site down');
+      return { ok: true, text: async () => page };
+    }
+    return { ok: true, json: async () => ({ full_name: 'x/y' }) };
+  };
+  t.after(() => { global.fetch = originalFetch; delete process.env.BITCOINDEVS_MODE; delete process.env.BITCOINDEVS_MAX_REPOS; });
+  return pageRequests;
+}
+
+const PAGE = [
+  record('lightningnetwork/lnd', 1, ['good first issue']),
+  record('lightningnetwork/lnd', 2, ['bug']),
+  record('bitcoin/bitcoin', 3, ['bug'], '2026-09-02T00:00:00Z'),
+  record('bitcoindevkit/bdk', 4, ['enhancement'], '2026-09-03T00:00:00Z'),
+  record('payjoin/rust-payjoin', 5, ['good first issue', 'ffi'], '2026-09-04T00:00:00Z'),
+].join('\n');
+
+test('scan targets cover every project on the BitcoinDevs page, not only those with good first issues', async t => {
+  mockWorld(t, { page: PAGE });
+  const repositories = await loadRepositoriesModule(t);
+
+  const targets = await repositories.getScanTargets();
+
+  assert.equal(targets.source, 'bitcoindevs');
+  assert.deepEqual([...targets.repos].sort(), ['bitcoin/bitcoin', 'bitcoindevkit/bdk', 'lightningnetwork/lnd', 'payjoin/rust-payjoin']);
+  assert.deepEqual(targets.issues.map(issue => issue.number).sort(), [1, 5], 'only good first issues are seeded');
+});
+
+test('watching a repo adds to the scan instead of replacing it, and a paused repo stays out', async t => {
+  mockWorld(t, { page: PAGE });
+  const repositories = await loadRepositoriesModule(t);
+  await repositories.addRepository('rust-bitcoin/rust-bitcoin');
+  const lnd = await repositories.addRepository('LightningNetwork/LND');
+  await repositories.updateRepository(lnd.id, { enabled: false });
+
+  const targets = await repositories.getScanTargets();
+
+  assert.equal(targets.source, 'watchlist+bitcoindevs');
+  assert.ok(targets.repos.includes('rust-bitcoin/rust-bitcoin'), 'the watched repo is scanned');
+  assert.ok(targets.repos.includes('bitcoin/bitcoin') && targets.repos.includes('payjoin/rust-payjoin'), 'the page is still scanned');
+  assert.ok(!targets.repos.some(repo => repo.toLowerCase() === 'lightningnetwork/lnd'), 'a paused repo is excluded even though the page lists it');
+  assert.ok(targets.issues.every(issue => issue.repo.toLowerCase() !== 'lightningnetwork/lnd'), 'and so are its seeds');
+  assert.equal(new Set(targets.repos.map(repo => repo.toLowerCase())).size, targets.repos.length, 'no duplicates');
+});
+
+test('BITCOINDEVS_MAX_REPOS still caps the scan when you want it to', async t => {
+  mockWorld(t, { page: PAGE });
+  process.env.BITCOINDEVS_MAX_REPOS = '2';
+  const repositories = await loadRepositoriesModule(t);
+  process.env.BITCOINDEVS_MAX_REPOS = '2';
+
+  const targets = await repositories.getScanTargets();
+  assert.equal(targets.repos.length, 2);
+});
+
+test('when the page is down the watchlist still scans, and an empty watchlist uses the curated list', async t => {
+  mockWorld(t, { page: '', fail: true });
+  const repositories = await loadRepositoriesModule(t);
+
+  const curated = await repositories.getScanTargets();
+  assert.equal(curated.source, 'bitcoin-ecosystem');
+  assert.ok(curated.repos.length > 0);
+
+  await repositories.addRepository('bitcoin/bitcoin');
+  const watched = await repositories.getScanTargets();
+  assert.equal(watched.source, 'watchlist');
+  assert.deepEqual(watched.repos, ['bitcoin/bitcoin']);
+});
+
+test('pausing everything while the page lists projects does not silently scan the page', async t => {
+  mockWorld(t, { page: record('payjoin/rust-payjoin', 5, ['good first issue']) });
+  const repositories = await loadRepositoriesModule(t);
+  const only = await repositories.addRepository('payjoin/rust-payjoin');
+  await repositories.updateRepository(only.id, { enabled: false });
+
+  const targets = await repositories.getScanTargets();
+  assert.deepEqual(targets.repos, [], 'the one listed project is paused, so nothing is scanned and no catalogue fallback appears');
+  assert.equal(targets.source, 'none');
 });

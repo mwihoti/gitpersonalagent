@@ -216,7 +216,11 @@ npm start
 
 Runs at 8am Nairobi time (Africa/Nairobi) every day.
 
-Scheduled scans use the dashboard watchlist first. If the watchlist is empty, the agent falls back to the BitcoinDevs good-first-issues page and scans the GitHub repositories linked there.
+Scheduled scans cover **every project on the BitcoinDevs good-first-issues page, plus any repository you watch**. The page ships its whole dataset in its HTML, so one request lists all of it, whatever labels the issues carry, and each project's issues are then read from GitHub. Pausing a watched repo ("Included in scans" off) removes it from scans even if the page lists it.
+
+- `BITCOINDEVS_MAX_REPOS` caps the number of projects (0 or unset means all, with a ceiling of 100).
+- `BITCOINDEVS_MODE=fallback` restores the older rule: the page is used only when the watchlist is empty, so watching one repo narrows every scan to it.
+- `SCAN_DETAIL_PER_REPO` (default 10) is how many issues per repo are read closely, at two GitHub requests each. Candidates are ranked from list data first, so those are the best ones, not the newest.
 
 ### 7. Run the public Telegram bot
 
@@ -657,7 +661,7 @@ PREFERRED_LANGUAGES=Rust,Python,TypeScript
 
 # BitcoinDevs discovery, then the curated catalogue as a floor
 BITCOINDEVS_ISSUES_URL=https://bitcoindevs.xyz/good-first-issues?sort=newest-first&page=1&labels=good+first+issue
-BITCOINDEVS_MAX_REPOS=12
+BITCOINDEVS_MAX_REPOS=0
 BITCOINDEVS_DISCOVERY=true
 BITCOIN_SEED_REPOS=12
 

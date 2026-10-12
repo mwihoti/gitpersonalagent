@@ -124,10 +124,33 @@ async function getScanRepositories() {
   return targets.repos;
 }
 
+// How a watchlist and BitcoinDevs discovery combine:
+//   merge (default)  scan everything on the BitcoinDevs page plus what you
+//                    watch; pausing a repo removes it from both
+//   fallback         discovery only runs when the watchlist is empty, so
+//                    watching one repo narrows every scan to that repo
+function bitcoinDevsMode() {
+  return String(process.env.BITCOINDEVS_MODE || 'merge').toLowerCase() === 'fallback' ? 'fallback' : 'merge';
+}
+
+function uniqueRepos(lists) {
+  const seen = new Set();
+  const out = [];
+  for (const repo of lists.flat()) {
+    const key = String(repo).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(repo);
+  }
+  return out;
+}
+
 async function getScanTargets() {
   const repos = await listRepositories();
   const savedRepos = repos.filter(entry => entry.enabled).map(entry => entry.repo);
-  if (repos.length || !isBitcoinDevsDiscoveryEnabled()) {
+  const paused = new Set(repos.filter(entry => !entry.enabled).map(entry => entry.repo.toLowerCase()));
+
+  if (!isBitcoinDevsDiscoveryEnabled() || (bitcoinDevsMode() === 'fallback' && repos.length)) {
     return {
       source: savedRepos.length ? 'watchlist' : 'none',
       sourceUrl: '',
@@ -136,20 +159,33 @@ async function getScanTargets() {
     };
   }
 
+  let discovery = null;
   try {
-    const discovery = await fetchBitcoinDevsIssues();
-    const savedDiscovery = await saveBitcoinDevsDiscovery(discovery);
-    if (savedDiscovery.repos.length) {
-      console.log(`  Using ${savedDiscovery.repos.length} BitcoinDevs good-first-issue repos as scan targets`);
-      return savedDiscovery;
-    }
-    // The board answered but had nothing today. Fall through to the catalogue
-    // rather than returning an empty scan.
-    console.warn('  BitcoinDevs returned no issues; using the curated Bitcoin ecosystem list');
+    discovery = await fetchBitcoinDevsIssues();
+    await saveBitcoinDevsDiscovery(discovery).catch(() => null);
   } catch (error) {
     console.warn(`  BitcoinDevs discovery skipped: ${error.message}`);
   }
 
+  const discovered = (discovery ? discovery.repos : []).filter(repo => !paused.has(repo.toLowerCase()));
+  const combined = uniqueRepos([savedRepos, discovered]);
+  if (combined.length) {
+    const wanted = new Set(combined.map(repo => repo.toLowerCase()));
+    const source = savedRepos.length && discovered.length ? 'watchlist+bitcoindevs' : savedRepos.length ? 'watchlist' : 'bitcoindevs';
+    console.log(`  Scan targets: ${combined.length} repos (${savedRepos.length} watched, ${discovered.length} from BitcoinDevs)`);
+    return {
+      source,
+      sourceUrl: discovery ? discovery.sourceUrl : '',
+      repos: combined,
+      issues: (discovery ? discovery.issues : []).filter(issue => wanted.has(issue.repo.toLowerCase())),
+    };
+  }
+
+  // Nothing watched and nothing discovered (the board is empty or down, or
+  // every discovered repo is paused): use the curated list rather than an
+  // empty scan, unless the user deliberately paused everything.
+  if (repos.length) return { source: 'none', sourceUrl: '', repos: [], issues: [] };
+  console.warn('  BitcoinDevs returned no issues; using the curated Bitcoin ecosystem list');
   return bitcoinEcosystemTargets();
 }
 
