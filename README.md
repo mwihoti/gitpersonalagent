@@ -193,6 +193,7 @@ For durable Telegram subscriptions (required in webhook/serverless mode), create
 | Last Name | Single line text |
 | Subscribed At | Single line text |
 | Last Seen At | Single line text |
+| Profile | Long text (optional; created by `npm run setup -- --subscribers`) |
 
 ### 4. Log in to Ollama
 
@@ -239,6 +240,11 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 | `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
 | `/status` | Anyone | Confirms the bot is running |
 | `/help` | Anyone | Shows available commands |
+| `/github <username>` | Anyone | Reads your public GitHub to learn your languages and experience, and personalises your digest |
+| `/skills rust, lightning` | Anyone | Tell the bot your languages, Bitcoin areas, and keywords (`/skills clear` removes them) |
+| `/level newcomer` | Anyone | Set newcomer, intermediate, or experienced (`/level clear` goes back to GitHub's view) |
+| `/match` | Anyone | Issues that fit you right now, each read closely and unclaimed |
+| `/me` / `/forget` | Anyone | Show or delete what the bot knows about you |
 | `/scan` | Admin chat only | Runs the normal top-priority scan immediately (15 issues) |
 | `/scan 25` | Admin chat only | Same, asking for 25 issues; works with any mode, e.g. `/scan all 30` |
 | `/scan all` | Admin chat only | Scans a broader set of open issues |
@@ -506,6 +512,63 @@ get a nudge. Link a PR with `/pr <issue url> <pr url>` from Telegram or the PR
 URL field in the workbench. Set `GITHUB_LOGINS` (comma-separated GitHub
 usernames) and open PRs you authored on a tracked issue are linked
 automatically.
+
+---
+
+## Personal matching
+
+Anyone can connect and get issues that fit them, with no sign-in and no token
+handed over.
+
+1. Open the bot and send `/start`.
+2. Send `/github <username>`. The bot reads only **public** GitHub data: the
+   languages in repositories you own, and the repositories you have merged pull
+   requests into. From that it derives your language shares, your experience
+   level, and the Bitcoin areas you have worked in.
+3. Optionally say it yourself: `/skills rust, lightning, docs`, `/level newcomer`.
+   What you name counts fully; languages GitHub shows but you did not name count
+   for half.
+4. `/match` finds issues now. Your morning digest is picked the same way.
+
+How an issue is scored for you: its generic fit (clear, active, welcoming), then
+language match, area match, merged work you already have in that project, how
+the difficulty fits your level, and any keywords you gave. Scores are blended,
+not summed, so strong matches stay distinguishable. Anything that is a negative
+fit for you (a language you do not use, a consensus-level project for a
+newcomer) is left out, and claimed issues are never offered. A claim nobody
+followed up on (older than `CLAIM_TTL_DAYS`, no pull request) is offered with a
+warning.
+
+Things worth knowing:
+
+- **Level.** "Experienced" needs ten merged pull requests elsewhere and three in
+  Bitcoin projects from the catalogue. Plenty of work in other ecosystems gives
+  "intermediate", which is what the Bitcoin projects need to see. Areas come only
+  from catalogued projects, never from guessing at a repository name.
+- **The digest.** The owner keeps the full digest. People with a profile get
+  "Picked for you", which skips what they were offered in the last 14 days, and
+  nothing at all on a day with nothing new that fits. People without a profile
+  get the ecosystem view without the owner's queue, tracked items, or pull
+  requests.
+- **On-demand scans.** `/scan` answers only the person who asked. The scheduled
+  digest still goes to everyone.
+- **Owner-only actions.** The claim and dismiss buttons and `/pr` change the
+  owner's queue, so only the owner's chat can use them.
+- **Privacy.** The stored profile holds derived facts: your GitHub login,
+  language shares, repository names with merged-PR counts, what you typed, and the
+  issue links you were offered. It is stored on your row in the Subscribers
+  table. `/forget` deletes it and `/stop` deletes everything. Because only public
+  data is read, anyone could enter someone else's username; it only shapes their
+  own digest.
+- **Cost.** `/github` uses about 10 GitHub requests and `/match` about 125, with
+  a 30 second and 2 minute cooldown per person (`MATCH_COOLDOWN_SECONDS`).
+  `PROFILE_MATCH_LIMIT` (default 5) sets how many issues a digest holds.
+
+One-time setup: the profile needs a **Profile** long text column on the
+Subscribers table. Create it with `npm run setup -- --subscribers` (the token
+needs `schema.bases:write` for that run). The column is written with an update
+to the person's existing row, so it works even when the base cannot create new
+records. Creating a new subscriber still needs room in the base.
 
 ---
 

@@ -62,6 +62,9 @@ jobs:
           # The explicit modes (/scan all|goodfirst|medium) show everything again.
           SCAN_DEDUPE: ${{ (github.event.client_payload.scan_mode || inputs.scan_mode || 'default') == 'default' && 'true' || 'false' }}
           SCAN_REPLY_BOT: ${{ github.event.client_payload.bot_id || inputs.bot_id || '' }}
+          # An on-demand scan answers the person who asked, not every subscriber.
+          # The scheduled digest and a manual run from the Actions page still go to everyone.
+          SCAN_ONLY_CHAT: ${{ github.event.client_payload.chat_id || inputs.chat_id || '' }}
           SCAN_LIMIT: ${{ github.event.client_payload.limit || inputs.limit || '' }}
           SCAN_TRIGGER: telegram-actions
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

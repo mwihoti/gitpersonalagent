@@ -1,10 +1,15 @@
 "use strict";
 const config = require("./config");
 const {
+  ProfileStorageError,
+  getSubscriber,
   readSubscribers,
+  setSubscriberProfile,
   upsertSubscriber,
   removeSubscriber,
 } = require("./subscribers");
+const profileLib = require("./profile");
+const matching = require("./matching");
 const { listBots, primaryBot } = require("./bots");
 const { formatAge, normalizeUrl } = require("./issue-tracking");
 const { updateOpportunity } = require("./airtable");
@@ -313,6 +318,9 @@ const DIGEST_PARSE_MODE = "HTML";
 // newcomer can explore before committing to a daily digest.
 const BROWSE_HELP =
   "\n\nBrowse (no subscription needed):\n/projects - Bitcoin projects by area\n/areas - areas of the ecosystem\n/issues - what is open right now";
+
+const PERSONAL_HELP =
+  "\n\nMake it yours:\n/github <username> - learn my languages and experience from public GitHub\n/skills rust, lightning - tell me directly\n/level newcomer|intermediate|experienced\n/match - issues that fit me right now\n/me - what I know about you\n/forget - delete your profile";
 
 function cleanText(value) {
   return String(value || "")
@@ -703,7 +711,7 @@ async function handleCallbackQuery(query, bot) {
 
   const match = String(query.data || "").match(/^(claim|dismiss|why):([^:]+)(?::(\w+))?$/);
   if (!match) return answer("Unknown action");
-  if (!(await isSubscriber(chatId, botId))) return answer("Subscribe with /start first");
+  if (!isAdminChat(chatId)) return answer("These buttons manage the owner's queue.");
 
   const [, action, recordId, reasonKey] = match;
   const who = (query.from && (query.from.username || query.from.first_name)) || "telegram";
@@ -884,7 +892,326 @@ async function openIssuesReply(text) {
   ].join("\n");
 }
 
-async function handleTelegramUpdate(update, onScan, bot) {
+// ─── Personal matching ────────────────────────────────────────────────────────
+
+const cooldowns = new Map();
+
+// Seconds left before this key may run again, recording a new run when it may.
+function cooldownLeft(key, seconds, now = Date.now()) {
+  const last = cooldowns.get(key) || 0;
+  const left = Math.ceil((last + seconds * 1000 - now) / 1000);
+  if (left > 0) return left;
+  cooldowns.set(key, now);
+  return 0;
+}
+
+function argsOf(text) {
+  return String(text || "").trim().split(/\s+/).slice(1).join(" ");
+}
+
+function profileReply(profile, intro) {
+  const lines = profileLib.describeProfile(profile).map((line) => escapeHtml(line));
+  return [
+    intro ? `<b>${html(intro)}</b>` : "<b>Your profile</b>",
+    ...lines,
+    "",
+    "Your daily digest is picked from this. Adjust it with <code>/skills rust, lightning</code> or <code>/level newcomer</code>, and see matches now with /match.",
+  ].join("\n");
+}
+
+const EFFORT_LABELS = { "quick win": "quick win", medium: "medium", complex: "complex" };
+
+function matchLines(matches) {
+  return matches.map((match, index) => {
+    const effort = EFFORT_LABELS[match.effort] ? ` · ${EFFORT_LABELS[match.effort]}` : "";
+    const why = match.reasons.length ? `\n    ${html(match.reasons.join("; "))}` : "";
+    const caution = match.caution ? `\n    ⚠ ${html(truncate(match.caution, 150))}` : "";
+    return `${index + 1}. ${link(`${match.repo} #${match.number} ${match.title}`, match.url, 110)}\n    fit ${match.score}${effort}${why}${caution}`;
+  }).join("\n\n");
+}
+
+function matchesMessage(matches, heading, footer) {
+  const body = matches.length ? matchLines(matches) : "Nothing free that matches your profile right now.";
+  return fitMessage(
+    `<b>${html(heading)}</b>\n\n${body}${footer ? `\n\n${footer}` : ""}`,
+    "Shortened. Send /match for the full list.",
+  );
+}
+
+// What a subscriber receives each morning when they have a profile.
+function personalDigestMessage(digest, matches, profile) {
+  const eff = profileLib.effectiveProfile(profile);
+  const basis = eff.github ? `GitHub ${eff.github}` : "your skills";
+  const date = cleanText(digest.date) || new Date().toISOString().slice(0, 10);
+  return matchesMessage(
+    matches,
+    `Picked for you · ${date}`,
+    `Matched to ${html(basis)}. Not right? <code>/skills</code>, <code>/level</code> or /match.`,
+  );
+}
+
+// The owner's digest carries their private queue: tracked items, their pull
+// requests, record buttons. Everyone else gets the ecosystem view only.
+function publicDigest(digest) {
+  return {
+    ...digest,
+    changes: null,
+    engineering: undefined,
+    housekeeping: undefined,
+    learning: undefined,
+    weekly_review: undefined,
+    persistence_error: undefined,
+    contest_digest: (digest.contest_digest || []).map((item) => ({ ...item, record_id: "" })),
+  };
+}
+
+// Who receives a digest: every subscriber across all bots, once each, plus the
+// owner. SCAN_ONLY_CHAT limits it to one chat (an on-demand scan answers the
+// person who asked, not everyone); SCAN_REPLY_BOT picks which bot answers.
+async function digestAudience(options = {}) {
+  const onlyChat = normalizeChatId(options.onlyChat ?? process.env.SCAN_ONLY_CHAT);
+  const replyBot = String(options.replyBot ?? process.env.SCAN_REPLY_BOT ?? "").trim();
+  const bots = [...listBots()].sort((a, b) => Number(b.botId === replyBot) - Number(a.botId === replyBot));
+  const admin = adminChatId();
+  const byChat = new Map();
+
+  for (const bot of bots) {
+    const subscribers = await readSubscribers(bot.botId).catch(() => []);
+    const entries = subscribers.map((item) => ({ chatId: normalizeChatId(item.chatId), profile: item.profile || null }));
+    if (bot.isPrimary && admin && !entries.some((entry) => entry.chatId === admin)) {
+      entries.unshift({ chatId: admin, profile: null });
+    }
+    for (const entry of entries) {
+      if (!entry.chatId) continue;
+      const existing = byChat.get(entry.chatId);
+      if (existing) {
+        // The same person on two bots: keep one delivery, but do not lose a profile.
+        if (!existing.profile && entry.profile) existing.profile = entry.profile;
+        continue;
+      }
+      byChat.set(entry.chatId, { chatId: entry.chatId, bot, botId: bot.botId, isAdmin: entry.chatId === admin, profile: entry.profile });
+    }
+  }
+  const audience = [...byChat.values()];
+  return onlyChat ? audience.filter((person) => person.chatId === onlyChat) : audience;
+}
+
+const SENT_MEMORY_DAYS = 14;
+
+// Remembers which issues a person was offered, so tomorrow's digest shows
+// something new instead of the same five.
+function withSentMemory(profile, urls, now = Date.now()) {
+  const cutoff = now - SENT_MEMORY_DAYS * 86_400_000;
+  const kept = Object.entries((profile && profile.sent) || {}).filter(([, at]) => Date.parse(at) >= cutoff);
+  for (const url of urls) kept.push([url, new Date(now).toISOString()]);
+  return { ...profile, sent: Object.fromEntries(kept.slice(-60)) };
+}
+
+function recentlySent(profile, now = Date.now()) {
+  const cutoff = now - SENT_MEMORY_DAYS * 86_400_000;
+  return new Set(Object.entries((profile && profile.sent) || {}).filter(([, at]) => Date.parse(at) >= cutoff).map(([url]) => url));
+}
+
+// Sends the digest to each recipient in the form that suits them.
+async function deliverDigest(digest, options = {}) {
+  const { pool = [], parseMode = DIGEST_PARSE_MODE, now = Date.now() } = options;
+  const onlyChat = normalizeChatId(options.onlyChat ?? process.env.SCAN_ONLY_CHAT);
+  const audience = await digestAudience({ ...options, onlyChat });
+  const ownerMessages = buildDigestMessages(digest);
+  let publicMessages = null;
+  let sentAny = false;
+  let personalised = 0;
+
+  const deliver = async (person) => {
+    const messages = [];
+    let matched = [];
+    if (profileLib.hasProfile(person.profile)) {
+      // Drop what they were already offered before ranking, so it cannot
+      // use up the per-repository slots that new issues should have.
+      const skip = recentlySent(person.profile, now);
+      const fresh = pool.map((entry) => ({ ...entry, issues: (entry.issues || []).filter((item) => !skip.has(item.url)) }));
+      matched = matching.rankForProfile(fresh, person.profile);
+    }
+    const wantsPersonal = profileLib.hasProfile(person.profile) && (matched.length || onlyChat);
+
+    if (person.isAdmin) {
+      messages.push(...ownerMessages);
+      if (wantsPersonal) messages.push(personalDigestMessage(digest, matched, person.profile));
+    } else if (wantsPersonal) {
+      messages.push(personalDigestMessage(digest, matched, person.profile));
+    } else if (!profileLib.hasProfile(person.profile)) {
+      publicMessages ||= buildDigestMessages(publicDigest(digest));
+      messages.push(...publicMessages);
+    }
+    // A profiled subscriber with nothing new today is left alone.
+
+    for (const message of messages) {
+      const ok = await sendTelegramToChat(person.chatId, message, person.bot.token, { parseMode });
+      sentAny = sentAny || ok;
+    }
+    if (matched.length && messages.length) {
+      personalised += 1;
+      try {
+        await setSubscriberProfile(person.chatId, person.botId, withSentMemory(person.profile, matched.map((match) => match.url), now));
+      } catch (error) {
+        console.warn(`  Could not remember what ${person.chatId} was sent: ${error.message}`);
+      }
+    }
+  };
+
+  const queue = [...audience];
+  await Promise.all(Array.from({ length: Math.min(5, queue.length) }, async () => {
+    while (queue.length) await deliver(queue.shift());
+  }));
+
+  // Nothing reached Telegram: fall back to WhatsApp for the owner, as before.
+  if (!sentAny && !onlyChat) {
+    for (const message of ownerMessages) {
+      const text = messageText(message);
+      if (await sendWhatsApp(parseMode ? stripHtml(text) : text)) sentAny = true;
+    }
+  }
+  return { recipients: audience.length, personalised, sentAny };
+}
+
+// Saves a profile, subscribing the chat first if it is not subscribed yet.
+async function saveProfile(msg, botId, profile) {
+  try {
+    return await setSubscriberProfile(msg.chat.id, botId, profile);
+  } catch (error) {
+    if (!(error instanceof ProfileStorageError) || error.code !== "not_subscribed") throw error;
+    await subscribeTelegramChat(msg.chat, botId);
+    return setSubscriberProfile(msg.chat.id, botId, profile);
+  }
+}
+
+function storageProblem(error) {
+  if (error instanceof ProfileStorageError && error.code === "missing_column") {
+    console.error('Profile not saved: the Subscribers table needs a "Profile" long text column (npm run setup -- --subscribers).');
+  } else {
+    console.error(`Profile not saved: ${error.message}`);
+  }
+  return "I could not save that just now. Please try again in a little while.";
+}
+
+async function handlePersonalCommand(command, msg, { chatId, botId, token, reply, deps }) {
+  const htmlOptions = { parseMode: DIGEST_PARSE_MODE };
+  const send = (text) => sendTelegramToChat(chatId, text, token, htmlOptions);
+  const args = argsOf(msg.text);
+  const existing = await getSubscriber(chatId, botId).catch(() => null);
+  const profile = (existing && existing.profile) || {};
+
+  if (command === "github") {
+    const login = profileLib.parseGitHubLogin(args);
+    if (!login) {
+      await reply("Send your GitHub username, for example: /github octocat");
+      return;
+    }
+    const wait = cooldownLeft(`github:${chatId}`, 30, deps.now);
+    if (wait) {
+      await reply(`That takes a moment to read. Try again in ${wait} seconds.`);
+      return;
+    }
+    await reply(`Reading ${login}'s public GitHub activity…`);
+    try {
+      const github = await (deps.buildProfile || profileLib.buildGitHubProfile)(login);
+      const next = { ...profile, github };
+      await saveProfile(msg, botId, next);
+      await send(profileReply(next, `Connected ${github.login}`));
+    } catch (error) {
+      if (error instanceof profileLib.ProfileError) await reply(error.message);
+      else await reply(storageProblem(error));
+    }
+    return;
+  }
+
+  if (command === "skills") {
+    if (!args) {
+      const manual = profile.manual || {};
+      const parts = [manual.languages && manual.languages.length ? `languages ${manual.languages.join(", ")}` : "", manual.areas && manual.areas.length ? `areas ${manual.areas.join(", ")}` : "", manual.keywords && manual.keywords.length ? `keywords ${manual.keywords.join(", ")}` : ""].filter(Boolean);
+      await reply(parts.length ? `You told me: ${parts.join("; ")}.\nChange it with /skills rust, lightning, or clear it with /skills clear.` : "Tell me what you work with, for example: /skills rust, python, lightning, privacy, docs");
+      return;
+    }
+    const cleared = /^(clear|reset|none)$/i.test(args);
+    const parsed = profileLib.parseSkills(args);
+    if (!cleared && !parsed.languages.length && !parsed.areas.length && !parsed.keywords.length) {
+      await reply("I could not find any skills in that. Try for example: /skills rust, lightning, docs");
+      return;
+    }
+    const manual = cleared ? { level: profile.manual && profile.manual.level } : { ...(profile.manual || {}), ...parsed };
+    try {
+      const next = { ...profile, manual };
+      await saveProfile(msg, botId, next);
+      await send(cleared ? "Cleared the skills you set. GitHub facts, if connected, still apply." : profileReply(next, "Got it"));
+    } catch (error) {
+      await reply(storageProblem(error));
+    }
+    return;
+  }
+
+  if (command === "level") {
+    const clear = /^(clear|reset|auto)$/i.test(args);
+    const level = profileLib.normalizeLevel(args);
+    if (!clear && !level) {
+      await reply("Tell me where you are: /level newcomer, /level intermediate or /level experienced. /level clear goes back to what GitHub shows.");
+      return;
+    }
+    try {
+      const manual = { ...(profile.manual || {}) };
+      if (clear) delete manual.level; else manual.level = level;
+      const next = { ...profile, manual };
+      await saveProfile(msg, botId, next);
+      await send(profileReply(next, clear ? "Level reset" : `Level set to ${level}`));
+    } catch (error) {
+      await reply(storageProblem(error));
+    }
+    return;
+  }
+
+  if (command === "me") {
+    if (!profileLib.hasProfile(profile)) {
+      await reply("I do not know anything about you yet. Send /github <username> or /skills rust, lightning.");
+      return;
+    }
+    await send(profileReply(profile));
+    return;
+  }
+
+  if (command === "forget") {
+    try {
+      if (existing) await setSubscriberProfile(chatId, botId, null);
+      await reply("Your profile is deleted. You stay subscribed to the general digest. /stop unsubscribes.");
+    } catch (error) {
+      await reply(storageProblem(error));
+    }
+    return;
+  }
+
+  // /match
+  if (!profileLib.hasProfile(profile)) {
+    await reply("Tell me about you first: /github <username> or /skills rust, lightning. Then /match finds issues that fit.");
+    return;
+  }
+  const wait = cooldownLeft(`match:${chatId}`, Number(process.env.MATCH_COOLDOWN_SECONDS) || 120, deps.now);
+  if (wait) {
+    await reply(`I just looked for you. Try again in ${wait} seconds.`);
+    return;
+  }
+  const count = Math.max(1, Math.min(10, Number(args.match(/\d+/)) || Number(process.env.PROFILE_MATCH_LIMIT) || 5));
+  await reply("Looking through the projects that fit you best. This takes about 15 seconds…");
+  try {
+    const result = await (deps.liveMatches || matching.liveMatches)(profile, { limit: count });
+    await send(matchesMessage(
+      result.matches,
+      `Issues that fit you · ${result.scanned} project${result.scanned === 1 ? "" : "s"} checked`,
+      result.matches.length ? "Each was read closely and none is claimed. <code>/analyze &lt;issue url&gt;</code> gives a plan." : "Try /skills to widen what I look for.",
+    ));
+  } catch (error) {
+    await reply(`I could not look just now: ${String(error.message).slice(0, 150)}`);
+  }
+}
+
+async function handleTelegramUpdate(update, onScan, bot, deps = {}) {
   if (update && update.callback_query) {
     return handleCallbackQuery(update.callback_query, bot);
   }
@@ -900,9 +1227,21 @@ async function handleTelegramUpdate(update, onScan, bot) {
   const reply = (text) => sendTelegramToChat(chatId, text, token);
 
   if (command === "start" || command === "subscribe") {
-    await subscribeTelegramChat(msg.chat, botId);
+    try {
+      await subscribeTelegramChat(msg.chat, botId);
+    } catch (e) {
+      // Without this the person got silence. Say so, and tell the owner, who is
+      // the only one who can fix storage.
+      console.error(`Subscribe failed for ${chatId}: ${e.message}`);
+      await reply("I could not save your subscription just now. Please try again in a little while.");
+      const admin = adminChatId();
+      if (admin && admin !== chatId) {
+        await sendTelegramToChat(admin, `A new subscriber could not be saved (chat ${chatId}${msg.chat.username ? `, @${msg.chat.username}` : ""}): ${String(e.message).slice(0, 200)}`, token);
+      }
+      return;
+    }
     await reply(
-      "You are subscribed. Every morning you get the Bitcoin contribution digest: which issues opened, which moved, and which are genuinely unclaimed.\n\nStart here:\n/projects - the Bitcoin projects I watch\n/issues - what is open right now\n/analyze <issue url> - deep read before you start\n\nScan commands:\n/scan - top prioritized issues\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues\n\nSend /stop to unsubscribe.",
+      "You are subscribed. Every morning you get the Bitcoin contribution digest: which issues opened, which moved, and which are genuinely unclaimed.\n\nMake it yours in two steps:\n/github <username> - I read your public GitHub to learn your languages and experience\n/skills rust, lightning - or tell me directly\nThen /match shows issues that fit you right now, and your morning digest is picked for you.\n\nOr browse first:\n/projects - the Bitcoin projects I watch\n/issues - what is open right now\n/analyze <issue url> - deep read before you start\n\nSend /stop to unsubscribe."
     );
   } else if (command === "stop" || command === "unsubscribe") {
     await unsubscribeTelegramChat(chatId, botId);
@@ -936,8 +1275,8 @@ async function handleTelegramUpdate(update, onScan, bot) {
       await reply(`Scan failed: ${e.message}`);
     }
   } else if (command === "pr") {
-    if (!(await isSubscriber(chatId, botId))) {
-      await reply("Subscribe with /start first.");
+    if (!isAdminChat(chatId)) {
+      await reply("Linking pull requests manages the owner's queue, so it is only available to the owner.");
       return;
     }
     const urls = String(msg.text || "").match(/https?:\/\/github\.com\/\S+/gi) || [];
@@ -1001,6 +1340,8 @@ async function handleTelegramUpdate(update, onScan, bot) {
     } catch (e) {
       await reply(`Could not read the queue: ${e.message}`);
     }
+  } else if (["github", "skills", "level", "me", "forget", "match"].includes(command)) {
+    await handlePersonalCommand(command, msg, { chatId, botId, token, reply, deps });
   } else if (command === "status") {
     await reply(
       (await isSubscriber(chatId, botId))
@@ -1010,8 +1351,8 @@ async function handleTelegramUpdate(update, onScan, bot) {
   } else if (command === "help") {
     await reply(
       (await isSubscriber(chatId, botId))
-        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues" + BROWSE_HELP
-        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot" + BROWSE_HELP,
+        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues" + BROWSE_HELP + PERSONAL_HELP
+        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot" + BROWSE_HELP + PERSONAL_HELP,
     );
   }
 }
@@ -1086,6 +1427,11 @@ function sleep(ms) {
 
 module.exports = {
   sendNotification,
+  deliverDigest,
+  digestAudience,
+  matchesMessage,
+  personalDigestMessage,
+  publicDigest,
   DIGEST_PARSE_MODE,
   stripHtml,
   messageText,

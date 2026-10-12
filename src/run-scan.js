@@ -9,7 +9,7 @@ const { buildEngineeringReport } = require('./pr-tracking');
 const { planQueueRefresh } = require('./queue-refresh');
 const { getScanTargets } = require('./repositories');
 const { runWithLock } = require('./scan-state');
-const { sendNotification, buildDigestMessages, DIGEST_PARSE_MODE } = require('./whatsapp');
+const { sendNotification, buildDigestMessages, deliverDigest, DIGEST_PARSE_MODE } = require('./whatsapp');
 const tracking = require('./issue-tracking');
 const { analyzeIssue } = require('./issue-analysis');
 const { isTightBudget } = require('./providers');
@@ -547,8 +547,13 @@ async function runScan(options = {}) {
         .catch(e => logger.warn(`  Record updates skipped: ${e.message}`)));
     }
     if (notify) {
-      tasks.push(sendNotification(buildDigestMessages(digest), { parseMode: DIGEST_PARSE_MODE })
-        .catch(e => logger.warn(`  Notification skipped: ${e.message}`)));
+      // Each subscriber gets the form that suits them: the owner the full
+      // digest, people with a profile their own matches, everyone else the
+      // ecosystem view. The whole scanned pool is what matching draws from.
+      const deliver = typeof deliverDigest === 'function'
+        ? () => deliverDigest(digest, { pool: annotated })
+        : () => sendNotification(buildDigestMessages(digest), { parseMode: DIGEST_PARSE_MODE });
+      tasks.push(deliver().catch(e => logger.warn(`  Notification skipped: ${e.message}`)));
     }
     await Promise.all(tasks);
     run.timingsMs.publish = Date.now() - publishStarted;

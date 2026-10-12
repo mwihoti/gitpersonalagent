@@ -15,6 +15,10 @@
 //   Last Name (single line text)
 //   Subscribed At (single line text — ISO timestamp)
 //   Last Seen At (single line text — ISO timestamp)
+//   Profile (long text — JSON, optional): GitHub-derived skills and anything the
+//     person set with /skills. Written with PATCH only, so it works even when
+//     the base cannot create new records. Create the column with
+//     `npm run setup -- --subscribers`.
 const config = require('./config');
 
 // `fs`/`path` are pulled in lazily so the Airtable path stays runtime-agnostic
@@ -53,6 +57,25 @@ function normalizeChatId(chatId) {
   return String(chatId || '').trim();
 }
 
+function parseProfile(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Thrown when a profile cannot be saved for a reason the caller can act on.
+class ProfileStorageError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
 // ─── Record <-> Airtable field mapping ───────────────────────────────────────
 
 function toRecord(recordId, fields = {}) {
@@ -67,11 +90,12 @@ function toRecord(recordId, fields = {}) {
     lastName: fields['Last Name'] || '',
     subscribedAt: fields['Subscribed At'] || '',
     lastSeenAt: fields['Last Seen At'] || '',
+    profile: parseProfile(fields.Profile),
   };
 }
 
 function toFields(record) {
-  return {
+  const fields = {
     ChatId: normalizeChatId(record.chatId),
     BotId: String(record.botId || '').trim(),
     Type: record.type || '',
@@ -82,6 +106,10 @@ function toFields(record) {
     'Subscribed At': record.subscribedAt || '',
     'Last Seen At': record.lastSeenAt || '',
   };
+  // Only sent when the caller supplies one, so tables without the column keep
+  // working and re-subscribing never wipes a profile.
+  if (record.profile !== undefined) fields.Profile = record.profile ? JSON.stringify(record.profile) : '';
+  return fields;
 }
 
 // A chat is identified by (botId, chatId): the same person messaging two bots is
@@ -301,7 +329,61 @@ async function removeSubscriber(chatId, botId) {
   return localRemove(normalized, botId);
 }
 
+async function getSubscriber(chatId, botId) {
+  const chat = normalizeChatId(chatId);
+  if (!chat) return null;
+  if (airtableEnabled()) {
+    try {
+      return await airtableFind(chat, botId);
+    } catch (error) {
+      if (!isNetworkError(error)) throw error;
+    }
+  }
+  const records = await localReadAll();
+  return records.find((item) => sameSubscription(item, chat, botId)) || null;
+}
+
+// Saves (or, with null, clears) a subscriber's profile. The subscriber must
+// already exist; this never creates a row, so it keeps working when the base is
+// at its record limit.
+async function setSubscriberProfile(chatId, botId, profile) {
+  const chat = normalizeChatId(chatId);
+  const value = profile && typeof profile === 'object' ? { ...profile, updatedAt: new Date().toISOString() } : null;
+
+  if (airtableEnabled()) {
+    try {
+      const existing = await airtableFind(chat, botId);
+      if (!existing) throw new ProfileStorageError('not_subscribed', 'Subscribe first');
+      await airtableRequest('PATCH', `/${existing.recordId}`, {
+        fields: { Profile: value ? JSON.stringify(value) : '' },
+        typecast: true,
+      });
+      return value;
+    } catch (error) {
+      if (error instanceof ProfileStorageError) throw error;
+      if (/UNKNOWN_FIELD_NAME|Unknown field name/i.test(String(error.message))) {
+        throw new ProfileStorageError('missing_column', 'The Subscribers table has no "Profile" column');
+      }
+      if (!isNetworkError(error)) throw error;
+      console.warn(`  Subscribers: Airtable profile write failed, using local store (${error.message})`);
+    }
+  }
+
+  return serializeLocalWrite(async () => {
+    const records = await localReadAll();
+    const index = records.findIndex((item) => sameSubscription(item, chat, botId));
+    if (index === -1) throw new ProfileStorageError('not_subscribed', 'Subscribe first');
+    if (value) records[index] = { ...records[index], profile: value };
+    else delete records[index].profile;
+    await localWriteAll(records);
+    return value;
+  });
+}
+
 module.exports = {
+  ProfileStorageError,
+  getSubscriber,
+  setSubscriberProfile,
   readSubscribers,
   upsertSubscriber,
   removeSubscriber,
