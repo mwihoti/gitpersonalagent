@@ -577,6 +577,42 @@ async function fetchPullRequestSnapshot(repo, number) {
   };
 }
 
+// ─── Public profile reads (used to match people to projects) ──────────────────
+
+async function fetchGitHubUser(login) {
+  const res = await githubRequest(`https://api.github.com/users/${encodeURIComponent(login)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    if (res.rateLimited) throw new GitHubRateLimitError(`user ${login}`);
+    throw new Error(`GitHub user lookup failed for ${login}: ${await getGitHubErrorMessage(res)}`);
+  }
+  return res.json();
+}
+
+// Public repositories the user owns, most recently pushed first.
+async function fetchUserRepos(login) {
+  const res = await githubRequest(`https://api.github.com/users/${encodeURIComponent(login)}/repos?per_page=100&sort=pushed&type=owner`);
+  if (!res.ok) {
+    if (res.rateLimited) throw new GitHubRateLimitError(`repos of ${login}`);
+    return [];
+  }
+  const repos = await res.json();
+  return Array.isArray(repos) ? repos : [];
+}
+
+// Merged pull requests the user opened against other people's repositories.
+// One search request; total_count says how many exist even beyond the first 100.
+async function searchMergedPullRequests(login) {
+  const q = `author:${login} type:pr is:merged -user:${login}`;
+  const res = await githubRequest(`https://api.github.com/search/issues?q=${encodeURIComponent(q)}&sort=updated&order=desc&per_page=100`);
+  if (!res.ok) {
+    if (res.rateLimited) throw new GitHubRateLimitError(`pull requests of ${login}`);
+    return { total: 0, items: [] };
+  }
+  const data = await res.json();
+  return { total: Number(data.total_count) || 0, items: Array.isArray(data.items) ? data.items : [] };
+}
+
 function parseIssueUrl(url) {
   const match = String(url || '').match(/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/i);
   if (!match) return null;
@@ -848,6 +884,9 @@ module.exports = {
   scanRepos,
   scanRepo,
   fetchAllOpenIssues,
+  fetchGitHubUser,
+  fetchUserRepos,
+  searchMergedPullRequests,
   checkGitHubAuth,
   githubAuthState,
   GitHubRateLimitError,
