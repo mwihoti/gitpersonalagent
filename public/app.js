@@ -81,7 +81,14 @@ async function loadRepos() { state.repos = (await api('/api/repositories')).repo
 async function loadHealth() {
   state.health = await api('/api/health');
   const bots = state.health.config?.telegramBots || 0;
-  $('telegram-status').innerHTML = `<i aria-hidden="true"></i>${bots ? 'Telegram configured' : 'Telegram not configured'}`;
+  const botUsername = /^[A-Za-z0-9_]{3,64}$/.test(state.health.config?.botUsername || '') ? state.health.config.botUsername : '';
+  if (bots && botUsername) {
+    $('telegram-cta-link').href = `https://t.me/${botUsername}`;
+    $('telegram-cta').classList.remove('hidden');
+  } else {
+    $('telegram-cta').classList.add('hidden');
+  }
+  $('telegram-status').innerHTML = `<i aria-hidden="true"></i>${bots ? (botUsername ? `Bot: @${escapeHtml(botUsername)}` : 'Telegram bot online') : 'Telegram not configured'}`;
   $('telegram-status').classList.toggle('configured', !!bots);
   const github = state.health.config?.githubAuth?.status;
   if (github === 'rejected' || github === 'anonymous') showNotice(github === 'rejected'

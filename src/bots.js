@@ -68,12 +68,37 @@ function resolveBot(botId) {
   return bots.find((bot) => bot.botId === wanted) || null;
 }
 
+const usernameCache = new Map();
+
+// The primary bot's public @username, so pages can link straight to it.
+// Cached per process; returns '' when it cannot be determined (no token,
+// network trouble, or an odd value), and callers hide the link then.
+async function publicBotUsername() {
+  const bot = primaryBot();
+  if (!bot) return '';
+  if (usernameCache.has(bot.botId)) return usernameCache.get(bot.botId);
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${bot.token}/getMe`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json().catch(() => null);
+    const username = data && data.ok && data.result ? String(data.result.username || '') : '';
+    const safe = /^[A-Za-z0-9_]{3,64}$/.test(username) ? username : '';
+    // Only cache positives, so one failed start-up does not hide the link forever.
+    if (safe) usernameCache.set(bot.botId, safe);
+    return safe;
+  } catch {
+    return '';
+  }
+}
+
 function isMultiBot() {
   return listBots().length > 1;
 }
 
 module.exports = {
   botIdFromToken,
+  publicBotUsername,
   listBots,
   primaryBot,
   resolveBot,
