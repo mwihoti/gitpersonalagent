@@ -74,7 +74,9 @@ const OPPORTUNITY_FIELDS = [
 
 const FIELDS = SUBSCRIBERS ? SUBSCRIBER_FIELDS : OPPORTUNITY_FIELDS;
 
-// The fields endpoint wants a table id; accept a name too.
+// The fields endpoint wants a table id; accept a name too. A missing
+// Subscribers table is created outright (it happens: "delete all data" sweeps
+// tend to take the table with it), complete with every field it needs.
 async function resolveTableId() {
   if (/^tbl[A-Za-z0-9]{10,}$/.test(TABLE_REF)) return TABLE_REF;
   const res = await fetch(`https://api.airtable.com/v0/meta/bases/${BASE_ID}/tables`, {
@@ -83,8 +85,32 @@ async function resolveTableId() {
   });
   if (!res.ok) throw new Error(`Could not list tables (${res.status}). The token needs schema.bases:read.`);
   const table = ((await res.json()).tables || []).find(entry => entry.name === TABLE_REF || entry.id === TABLE_REF);
-  if (!table) throw new Error(`No table named "${TABLE_REF}" in this base. Create it (or set AIRTABLE_SUBSCRIBERS_TABLE) and run again.`);
-  return table.id;
+  if (table) return table.id;
+  if (!SUBSCRIBERS) {
+    throw new Error(`No table named "${TABLE_REF}" in this base. Create it (or fix AIRTABLE_TABLE_NAME) and run again.`);
+  }
+
+  console.log(`  Table "${TABLE_REF}" does not exist — creating it with all fields...`);
+  const created = await fetch(`https://api.airtable.com/v0/meta/bases/${BASE_ID}/tables`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: TABLE_REF,
+      description: 'Telegram subscribers of the daily digest, managed by the bot.',
+      // The first field becomes the primary field; ChatId is the natural key.
+      fields: SUBSCRIBER_FIELDS,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const data = await created.json().catch(() => ({}));
+  if (!created.ok) {
+    if (created.status === 403) {
+      throw new Error('Creating the table needs the schema.bases:write scope on the token (airtable.com/create/tokens).');
+    }
+    throw new Error(`Could not create the table: ${JSON.stringify(data.error || data).slice(0, 300)}`);
+  }
+  console.log(`  ✓ Created table: ${TABLE_REF} with ${SUBSCRIBER_FIELDS.length} fields`);
+  return data.id;
 }
 
 async function createField(field) {
