@@ -29,12 +29,19 @@ async function withHandler(fn) {
     'DAN_AGENT_DATA_DIR',
     'TELEGRAM_WEBHOOK_SECRET',
     'TELEGRAM_BOT_TOKEN',
+    'AIRTABLE_API_KEY',
+    'AIRTABLE_BASE_ID',
   ]) {
     saved[key] = process.env[key];
   }
   const prevFetch = global.fetch;
 
   process.env.DAN_AGENT_DATA_DIR = dir;
+  // Pin to empty strings rather than deleting: src/config.js loads .env at
+  // require time and only fills variables that are absent, so a developer's
+  // real Airtable key must not leak into the test run.
+  process.env.AIRTABLE_API_KEY = '';
+  process.env.AIRTABLE_BASE_ID = '';
   process.env.TELEGRAM_WEBHOOK_SECRET = 'topsecret';
   if (!process.env.TELEGRAM_BOT_TOKEN) process.env.TELEGRAM_BOT_TOKEN = BOT_A;
 

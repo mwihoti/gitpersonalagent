@@ -11,7 +11,8 @@ async function load(t, env) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'danagent-profile-'));
   const saved = Object.fromEntries(KEYS.map(key => [key, process.env[key]]));
   for (const key of KEYS) delete process.env[key];
-  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir }, env);
+  // Empty strings, not deletions: config.js re-reads .env for absent keys.
+  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '', AIRTABLE_SUBSCRIBERS_TABLE: '' }, env);
   for (const mod of ['config', 'subscribers']) delete require.cache[path.resolve(__dirname, '..', 'src', `${mod}.js`)];
   const prevFetch = global.fetch;
   t.after(async () => {

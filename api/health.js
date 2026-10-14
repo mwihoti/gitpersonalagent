@@ -3,7 +3,7 @@ const { isAirtableConfigured } = require('../src/airtable');
 const { readBitcoinDevsDiscoveries } = require('../src/bitcoindevs');
 const { getCurrentRun, getRecentRuns } = require('../src/scan-state');
 const { isDispatchConfigured } = require('../src/scan-dispatch');
-const { listBots } = require('../src/bots');
+const { listBots, publicBotUsername } = require('../src/bots');
 const { sendJson } = require('../src/http');
 const { describeProviders } = require('../src/providers');
 const { checkGitHubAuth } = require('../src/github');
@@ -33,7 +33,12 @@ module.exports = async function handler(_req, res) {
   return sendJson(res, 200, {
     ok: true,
     storage: isAirtableConfigured() ? 'airtable' : 'local',
-    config: { ...configStatus(), githubAuth: await checkGitHubAuth().catch(() => ({ status: 'unknown' })) },
+    config: {
+      ...configStatus(),
+      githubAuth: await checkGitHubAuth().catch(() => ({ status: 'unknown' })),
+      // Public by design: it is the handle anyone uses to talk to the bot.
+      botUsername: await publicBotUsername().catch(() => ''),
+    },
     timestamp: new Date().toISOString(),
     currentRun: getCurrentRun(),
     recentRuns: recentRuns.slice(0, 30),
