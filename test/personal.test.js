@@ -305,3 +305,33 @@ test('the public digest drops everything that belongs to the owner', async t => 
   assert.equal(view.contest_digest[0].record_id, '');
   assert.equal(DIGEST.contest_digest[0].record_id, 'recOWNER', 'the original is untouched');
 });
+
+test('/repos browsing: list for anyone, sorts edit in place, owner gate untouched', async t => {
+  const { wa, sent, texts, say, bot } = await world(t);
+  const browseDeps = {
+    targets: async () => ['payjoin/rust-payjoin', 'lightningnetwork/lnd'],
+    queue: async () => [],
+    scan: async repo => ({ repo, totalOpenIssues: 2, issues: [
+      { number: 5, title: 'Fix a thing', url: `https://github.com/${repo}/issues/5`, labels: ['good first issue'], issueFitScore: 80, updatedAt: '2026-10-10T00:00:00Z' },
+      { number: 6, title: 'Claimed', url: `https://github.com/${repo}/issues/6`, labels: [], issueFitScore: 95, claim: { claimed: true } },
+    ] }),
+  };
+
+  // A stranger (not the owner, not subscribed) can browse.
+  await say(900, '/repos', { browseDeps });
+  const list = sent.find(m => m.method === 'sendMessage' && String(m.body.chat_id) === '900');
+  assert.match(list.body.text, /Repos in the daily scan/);
+  assert.equal(list.body.reply_markup.inline_keyboard[0][0].callback_data, 'b:r:f:payjoin/rust-payjoin');
+
+  await wa.handleTelegramUpdate({ callback_query: { id: 'cb9', data: 'b:r:f:payjoin/rust-payjoin', from: { username: 'stranger' }, message: { message_id: 42, chat: { id: 900 } } } }, async () => {}, bot, { browseDeps });
+  const edited = sent.find(m => m.method === 'editMessageText');
+  assert.equal(edited.body.message_id, 42, 'the same message becomes the issue view');
+  assert.match(edited.body.text, /payjoin\/rust-payjoin<\/b> · 2 open issues · Best fit/);
+  assert.match(edited.body.text, /#5 Fix a thing/);
+  assert.ok(!edited.body.text.includes('#6'), 'claimed stays hidden');
+  assert.ok(sent.some(m => m.method === 'answerCallbackQuery'));
+
+  // The owner-only buttons are still gated for that same stranger.
+  await wa.handleTelegramUpdate({ callback_query: { id: 'cb10', data: 'claim:rec1', from: { username: 'stranger' }, message: { message_id: 43, chat: { id: 900 } } } }, async () => {}, bot, { browseDeps });
+  assert.match(sent.filter(m => m.method === 'answerCallbackQuery').at(-1).body.text, /owner's queue/);
+});

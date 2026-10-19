@@ -16,6 +16,7 @@ const { updateOpportunity } = require("./airtable");
 const { analyzeIssue } = require("./issue-analysis");
 const { parseIssueUrl } = require("./github");
 const { DISMISS_REASONS } = require("./feedback");
+const browse = require("./browse");
 const {
   areaSummary,
   classifyRepo,
@@ -260,6 +261,7 @@ async function setTelegramCommands(botToken) {
               description: "Check whether the bot is running",
             },
             { command: "help", description: "Show available commands" },
+            { command: "repos", description: "Browse the scanned repos and their issues" },
             {
               command: "projects",
               description: "Bitcoin projects by area: /projects lightning",
@@ -317,7 +319,7 @@ const DIGEST_PARSE_MODE = "HTML";
 // Appended to /help for everyone. These three need no subscription, so a
 // newcomer can explore before committing to a daily digest.
 const BROWSE_HELP =
-  "\n\nBrowse (no subscription needed):\n/projects - Bitcoin projects by area\n/areas - areas of the ecosystem\n/issues - what is open right now";
+  "\n\nBrowse (no subscription needed):\n/repos - browse the scanned repos, pick one, sort its issues\n/projects - Bitcoin projects by area\n/areas - areas of the ecosystem\n/issues - what is open right now";
 
 const PERSONAL_HELP =
   "\n\nMake it yours:\n/github <username> - learn my languages and experience from public GitHub\n/skills rust, lightning - tell me directly\n/level newcomer|intermediate|experienced\n/match - issues that fit me right now\n/me - what I know about you\n/forget - delete your profile";
@@ -702,12 +704,38 @@ function analysisReply(result) {
   return fitMessage(lines.join("\n"), "Shortened. Open the dashboard for the full analysis.");
 }
 
-async function handleCallbackQuery(query, bot) {
+async function handleCallbackQuery(query, bot, deps = {}) {
   const active = bot || primaryBot() || {};
   const token = active.token || config.telegram.botToken;
   const botId = active.botId || "";
   const chatId = normalizeChatId(query.message && query.message.chat && query.message.chat.id);
   const answer = (text) => telegramCall(token, "answerCallbackQuery", { callback_query_id: query.id, text }).catch(() => null);
+
+  // Browsing buttons are read-only, so they work for everyone; the message is
+  // edited in place so one message stays the browser.
+  const browseRequest = browse.parseCallback(query.data);
+  if (browseRequest) {
+    await answer("");
+    try {
+      const view = await browse.browseView(browseRequest, deps.browseDeps || {});
+      const payload = {
+        chat_id: chatId,
+        message_id: query.message && query.message.message_id,
+        text: view.text,
+        parse_mode: DIGEST_PARSE_MODE,
+        disable_web_page_preview: true,
+        ...(view.replyMarkup ? { reply_markup: view.replyMarkup } : {}),
+      };
+      const res = await telegramCall(token, "editMessageText", payload);
+      if (!res.ok) {
+        // The message may be too old to edit; send a fresh one instead.
+        await sendTelegramToChat(chatId, { text: view.text, replyMarkup: view.replyMarkup }, token, { parseMode: DIGEST_PARSE_MODE });
+      }
+    } catch (e) {
+      await sendTelegramToChat(chatId, `I could not load that view: ${String(e.message).slice(0, 150)}`, token);
+    }
+    return true;
+  }
 
   const match = String(query.data || "").match(/^(claim|dismiss|why):([^:]+)(?::(\w+))?$/);
   if (!match) return answer("Unknown action");
@@ -1213,7 +1241,7 @@ async function handlePersonalCommand(command, msg, { chatId, botId, token, reply
 
 async function handleTelegramUpdate(update, onScan, bot, deps = {}) {
   if (update && update.callback_query) {
-    return handleCallbackQuery(update.callback_query, bot);
+    return handleCallbackQuery(update.callback_query, bot, deps);
   }
   const msg = update && update.message;
   if (!msg || !msg.chat) return;
@@ -1324,7 +1352,14 @@ async function handleTelegramUpdate(update, onScan, bot, deps = {}) {
     } catch (e) {
       await reply(`Analysis failed: ${e.message}`);
     }
-  } else if (command === "projects" || command === "repos") {
+  } else if (command === "repos" || command === "browse") {
+    try {
+      const view = await browse.browseView({ view: "list" }, deps.browseDeps || {});
+      await sendTelegramToChat(chatId, { text: view.text, replyMarkup: view.replyMarkup }, token, { parseMode: DIGEST_PARSE_MODE });
+    } catch (e) {
+      await reply(`I could not list the repos: ${String(e.message).slice(0, 150)}`);
+    }
+  } else if (command === "projects") {
     await sendTelegramToChat(chatId, projectsReply(msg.text), token, {
       parseMode: DIGEST_PARSE_MODE,
     });
