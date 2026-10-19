@@ -780,6 +780,7 @@ async function scanRepo(repo, options = {}) {
     seedIssues = [],
     detail: requestedDetail,
     skip = 0,
+    maxItems,
   } = options;
   const allOpen = mode === 'all-open';
   // Reading an issue closely costs two requests. A repository check reads 20;
@@ -793,7 +794,7 @@ async function scanRepo(repo, options = {}) {
     allOpen ? Promise.resolve([]) : fetchGoodFirstIssues(repo),
     allOpen ? Promise.resolve([]) : fetchBugIssues(repo),
     allOpen ? Promise.resolve([]) : fetchRecentPRActivity(repo),
-    allOpen ? fetchAllOpenIssues(repo) : Promise.resolve(null),
+    allOpen ? fetchAllOpenIssues(repo, { ...(maxItems ? { maxItems } : {}) }) : Promise.resolve(null),
     allOpen ? Promise.resolve([]) : Promise.all(seedIssues.map(async seed => {
       const issue = await fetchIssueByNumber(repo, seed.number);
       if (!issue) return null;

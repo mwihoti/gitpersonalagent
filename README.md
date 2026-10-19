@@ -240,6 +240,7 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 | `/stop` or `/unsubscribe` | Anyone | Unsubscribes that Telegram chat |
 | `/status` | Anyone | Confirms the bot is running |
 | `/help` | Anyone | Shows available commands |
+| `/repos` | Anyone | Browse the scanned repos as buttons: pick one for its ten best open issues, re-sort in place (best fit, good first, high priority), or switch to the all-repos queue |
 | `/github <username>` | Anyone | Reads your public GitHub to learn your languages and experience, and personalises your digest |
 | `/skills rust, lightning` | Anyone | Tell the bot your languages, Bitcoin areas, and keywords (`/skills clear` removes them) |
 | `/level newcomer` | Anyone | Set newcomer, intermediate, or experienced (`/level clear` goes back to GitHub's view) |

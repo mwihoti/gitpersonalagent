@@ -89,10 +89,12 @@ test("/areas lists every area with its key and count", async () => {
   });
 });
 
-test("/repos is accepted as an alias for /projects", async () => {
+test("/repos opens the interactive repo browser instead of the catalog", async () => {
   await captureReplies(async (sent) => {
-    await handleTelegramUpdate(message("/repos"), forbiddenScan, BOT);
-    assert.match(sent[0], /Bitcoin projects I watch/);
+    await handleTelegramUpdate(message("/repos"), forbiddenScan, BOT, {
+      browseDeps: { targets: async () => ["payjoin/rust-payjoin"], queue: async () => [] },
+    });
+    assert.match(sent[0], /Repos in the daily scan/);
   });
 });
 
