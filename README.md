@@ -95,7 +95,7 @@ Every morning at 8am Nairobi time the agent:
 1. **Scans GitHub** — pulls open issues from the repositories in your dashboard watchlist, prioritising `good first issue`, `help wanted`, and `bug` labels
 2. **Fetches tech news** — TechCrunch, Wired, Ars Technica, TLDR Tech, GitHub Blog, GitHub Releases, Hacker News
 3. **Analyses with a configured model provider** — walks a chain of Gemini, Groq, xAI Grok, and any OpenAI-compatible fallback, each with its own fallback models; uses Ollama locally when no cloud key is set
-4. **Saves to Airtable** — structured database of opportunities with effort level, suggested action, and starter code
+4. **Saves to Postgres (Neon)** — structured database of opportunities with effort level, suggested action, and starter code
 5. **Notifies via Telegram** — sends a digest with top opportunities and a short plan, with WhatsApp as fallback
 
 ---
@@ -130,7 +130,7 @@ News/RSS  ──┘                                                └─→ Tel
 - Node.js v18+
 - An [Ollama account](https://ollama.com) (for `gemma4:31b-cloud`)
 - A GitHub account (for the fine-grained token)
-- An Airtable account
+- A free [Neon](https://neon.tech) account (Postgres)
 - A Telegram bot (via @BotFather)
 
 ---
@@ -253,7 +253,7 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 
 Set `TELEGRAM_BOT_TOKEN` to make the bot public. Set `TELEGRAM_CHAT_ID` to your admin chat id if you want `/scan` to be available only to you.
 
-Subscribed chats are stored in **Airtable** when `AIRTABLE_API_KEY` + `AIRTABLE_BASE_ID` are set (durable, works on serverless), and fall back to a local JSON file (`data/telegram-subscribers.json`, or `/tmp/danagent-data` on Vercel) for local development. See [Subscribers table](#subscribers-table) for the schema.
+Subscribed chats are stored in **Neon Postgres** when `DATABASE_URL` is set (durable, works on serverless), and fall back to a local JSON file (`data/telegram-subscribers.json`, or `/tmp/danagent-data` on Vercel) for local development. See [Subscribers table](#subscribers-table) for the schema.
 
 ### 8. Run the bot on Vercel with webhooks (free, always responds)
 

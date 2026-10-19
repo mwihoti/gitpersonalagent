@@ -6,7 +6,7 @@
   "scripts": {
     "scan": "node agent.js --scan",
     "start": "node agent.js --schedule",
-    "setup": "node scripts/setup-airtable.js",
+    "setup": "node scripts/setup-db.js",
     "bot": "node agent.js --bot",
     "set-webhook": "node scripts/set-webhook.js",
     "dedupe-airtable": "node scripts/dedupe-airtable.js",
@@ -30,6 +30,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
     "@vercel/functions": "^3.7.6",
     "airtable": "^0.12.2",
     "dotenv": "^17.4.2",

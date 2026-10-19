@@ -8,7 +8,7 @@ const path = require('path');
 test('shared queue function preserves authentication, item updates, and preference routing', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dan-api-routing-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '', DAN_AGENT_API_KEY: 'routing-key' });
+  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '', DATABASE_URL: '', DAN_AGENT_API_KEY: 'routing-key' });
   const airtable = require('../src/airtable');
   const handler = require('../api/opportunities');
   const [created] = await airtable.saveDigest({ date: '2026-10-01', contest_digest: [{ repo: 'a/b', opportunity: 'Test issue', issue_url: 'https://github.com/a/b/issues/1', effort: 'low' }] });

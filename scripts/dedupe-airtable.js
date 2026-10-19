@@ -1,5 +1,5 @@
 'use strict';
-// One-off cleanup for bases that accumulated one row per scan day for the
+// One-off cleanup for stores that accumulated one row per scan day for the
 // same issue. Keeps the row with the most human input (status, owner,
 // activity log, PR URL), otherwise the newest, and deletes the rest.
 //

@@ -10,6 +10,7 @@ test('ranking reset requires access and preserves saved work and activity timest
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   process.env.DAN_AGENT_DATA_DIR = dir;
   process.env.AIRTABLE_API_KEY = '';
+  process.env.DATABASE_URL = '';
   process.env.AIRTABLE_BASE_ID = '';
   process.env.DAN_AGENT_API_KEY = 'test-key';
   for (const file of ['../src/config', '../src/airtable', '../src/auth', '../src/api/preferences']) delete require.cache[require.resolve(file)];

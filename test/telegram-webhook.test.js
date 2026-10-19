@@ -41,6 +41,7 @@ async function withHandler(fn) {
   // require time and only fills variables that are absent, so a developer's
   // real Airtable key must not leak into the test run.
   process.env.AIRTABLE_API_KEY = '';
+  process.env.DATABASE_URL = '';
   process.env.AIRTABLE_BASE_ID = '';
   process.env.TELEGRAM_WEBHOOK_SECRET = 'topsecret';
   if (!process.env.TELEGRAM_BOT_TOKEN) process.env.TELEGRAM_BOT_TOKEN = BOT_A;

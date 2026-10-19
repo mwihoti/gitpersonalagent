@@ -474,7 +474,7 @@ function buildDigestMessage(digest) {
     );
 
     if (digest.persistence_error) {
-      sections.push(`⚠ New items were not saved: ${html(digest.persistence_error)}. They have no buttons and will show as new again. Free space with <code>npm run dedupe-airtable -- --apply</code>.`);
+      sections.push(`⚠ New items were not saved: ${html(digest.persistence_error)}. They have no buttons and will show as new again. Check the database and the server logs.`);
     }
     if (fresh.length) {
       sections.push(`<b>New today</b>\n${renderIndex(fresh)}`);

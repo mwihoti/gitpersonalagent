@@ -626,7 +626,7 @@ test('runScan learns from outcomes, passes the profile to the model, and reports
   assert.ok(recordedEvents.some(e => e.recordId === 'rec-pr' && e.status === 'Done'));
 });
 
-test('a heuristic analysis never replaces the model write-up, and a full Airtable base is surfaced', async t => {
+test('a heuristic analysis never replaces the model write-up, and full storage is surfaced', async t => {
   let notifiedDigest = null;
   const result = state => ({
     issueUrl: 'u',
@@ -688,7 +688,7 @@ test('a heuristic analysis never replaces the model write-up, and a full Airtabl
   assert.equal(item.effort, 'low');
   assert.equal(item.analysis, undefined);
   assert.deepEqual(item.files_to_change.map(file => file.path), ['real.c']);
-  assert.equal(notifiedDigest.persistence_error, 'Airtable base is at its record limit');
+  assert.equal(notifiedDigest.persistence_error, 'storage is at its record limit');
 });
 
 test('DIGEST_OPPORTUNITY_LIMIT changes how many picks a plain scan asks for', async t => {

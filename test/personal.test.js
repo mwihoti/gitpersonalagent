@@ -8,18 +8,26 @@ const path = require('path');
 const ENV_KEYS = ['DAN_AGENT_DATA_DIR', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_2', 'TELEGRAM_CHAT_ID', 'AIRTABLE_API_KEY', 'AIRTABLE_BASE_ID', 'SCAN_ONLY_CHAT', 'SCAN_REPLY_BOT', 'PROFILE_MATCH_LIMIT', 'MATCH_COOLDOWN_SECONDS'];
 
 // A fresh copy of the bot modules, a temp data dir, and a recording Telegram.
-async function world(t, env = {}, airtable = null) {
+async function world(t, env = {}, dbStub = null) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'danagent-personal-'));
   const saved = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
   for (const key of ENV_KEYS) delete process.env[key];
-  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, TELEGRAM_BOT_TOKEN: '111:AAA', TELEGRAM_BOT_TOKEN_2: '222:BBB', TELEGRAM_CHAT_ID: '777', AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '' }, env);
+  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, TELEGRAM_BOT_TOKEN: '111:AAA', TELEGRAM_BOT_TOKEN_2: '222:BBB', TELEGRAM_CHAT_ID: '777', AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '', DATABASE_URL: '' }, env);
+  const dbPath = path.resolve(__dirname, '..', 'src', 'db.js');
+  const savedDb = require.cache[dbPath];
   for (const mod of ['config', 'bots', 'subscribers', 'airtable', 'whatsapp']) delete require.cache[path.resolve(__dirname, '..', 'src', `${mod}.js`)];
+  if (dbStub) {
+    delete require.cache[dbPath];
+    require.cache[dbPath] = {
+      id: dbPath, filename: dbPath, loaded: true,
+      exports: { isConfigured: () => true, isNetworkError: () => false, query: dbStub },
+    };
+  }
 
   const sent = [];
   const prevFetch = global.fetch;
   global.fetch = async (url, options = {}) => {
     const target = String(url);
-    if (airtable && target.includes('airtable.com')) return airtable(target, options);
     const match = target.match(/bot(\d+):[^/]+\/(\w+)$/);
     if (!match) return { ok: true, json: async () => ({}) };
     sent.push({ bot: match[1], method: match[2], body: JSON.parse(options.body) });
@@ -27,6 +35,9 @@ async function world(t, env = {}, airtable = null) {
   };
   t.after(async () => {
     global.fetch = prevFetch;
+    if (dbStub) {
+      if (savedDb) require.cache[dbPath] = savedDb; else delete require.cache[dbPath];
+    }
     for (const key of ENV_KEYS) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -162,17 +173,17 @@ test('queue buttons and /pr belong to the owner, not to other subscribers', asyn
 });
 
 test('a subscriber who cannot be saved is told so, and the owner is notified', async t => {
-  const refuse = (url, options) => {
-    if (options.method === 'GET') return { ok: true, json: async () => ({ records: [] }) };
-    return { ok: false, status: 422, text: async () => '{"error":{"message":"This base is or will be over its record limits"}}' };
+  const refuse = async text => {
+    if (/^SELECT/i.test(text)) return [];
+    throw new Error('could not extend relation: no space left on device');
   };
-  const { texts, say } = await world(t, { AIRTABLE_API_KEY: 'k', AIRTABLE_BASE_ID: 'app1' }, refuse);
+  const { texts, say } = await world(t, {}, refuse);
   const prevError = console.error;
   console.error = () => {};
   try { await say(700, '/start'); } finally { console.error = prevError; }
 
   assert.match(texts(700)[0], /could not save your subscription/);
-  assert.match(texts(777)[0], /A new subscriber could not be saved \(chat 700, @u700\).*record limits/);
+  assert.match(texts(777)[0], /A new subscriber could not be saved \(chat 700, @u700\).*no space left/);
 });
 
 test('/start tells newcomers how to make the digest theirs', async t => {

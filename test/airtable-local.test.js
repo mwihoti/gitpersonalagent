@@ -12,6 +12,7 @@ async function loadAirtableModule(t) {
   });
 
   process.env.AIRTABLE_API_KEY = '';
+  process.env.DATABASE_URL = '';
   process.env.AIRTABLE_BASE_ID = '';
   process.env.AIRTABLE_TABLE_NAME = 'Contest Opportunities';
   process.env.DAN_AGENT_DATA_DIR = tmpDir;

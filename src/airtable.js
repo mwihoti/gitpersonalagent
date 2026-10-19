@@ -1,120 +1,89 @@
 'use strict';
-const Airtable = require('airtable');
+// Opportunity storage: Neon Postgres, with the historical local JSON fallback.
+//
+// The filename is historical — this module spoke to Airtable until the free
+// plan's API-call and record limits made it untenable. The exported interface
+// is unchanged, so the rest of the code (and most tests) did not move.
+//
+// Two layers, same as always:
+//   DATABASE_URL set      → the `opportunities` table in Postgres
+//   otherwise, or when the network fails → data/opportunities.json
+//
+// The local file keeps its original shape (one object per record with
+// human-readable keys like "Issue URL"), so existing files remain readable.
 const fs = require('fs/promises');
 const path = require('path');
-const config = require('./config');
+const crypto = require('crypto');
+const db = require('./db');
 const { buildSeenMap } = require('./issue-tracking');
 
-let base = null;
-let tableSchemaPromise = null;
 let localWriteQueue = Promise.resolve();
 const LOCAL_DATA_DIR = process.env.DAN_AGENT_DATA_DIR || (process.env.VERCEL
   ? path.join('/tmp', 'danagent-data')
   : path.join(__dirname, '..', 'data'));
 const LOCAL_DATA_FILE = path.join(LOCAL_DATA_DIR, 'opportunities.json');
 
+// column name in Postgres · key in the local JSON file · key on records we return
+const FIELDS = [
+  ['date', 'Date', 'date'],
+  ['opportunity', 'Opportunity', 'opportunity'],
+  ['repo', 'Repo', 'repo'],
+  ['effort', 'Effort', 'effort'],
+  ['status', 'Status', 'status'],
+  ['priority', 'Priority', 'priority'],
+  ['owner', 'Owner', 'owner'],
+  ['due_date', 'Due Date', 'dueDate'],
+  ['issue_url', 'Issue URL', 'issueUrl'],
+  ['pr_url', 'PR URL', 'prUrl'],
+  ['suggested_action', 'Suggested Action', 'suggestedAction'],
+  ['next_step', 'Next Step', 'nextStep'],
+  ['activity_log', 'Activity Log', 'activityLog'],
+  ['quick_plan', 'Quick Plan', 'quickPlan'],
+  ['why_it_qualifies', 'Why It Qualifies', 'whyItQualifies'],
+  ['why_it_matters', 'Why It Matters', 'whyItMatters'],
+  ['clarity_tip', 'Clarity Tip', 'clarityTip'],
+  ['code_skeleton', 'Code Skeleton', 'codeSkeleton'],
+  ['source', 'Source', 'source'],
+  ['source_url', 'Source URL', 'sourceUrl'],
+  ['issue_updated_at', 'Issue Updated At', 'issueUpdatedAt'],
+  ['score', 'Score', 'score'],
+  ['impact', 'Impact', 'impact'],
+  ['maintainer_wants', 'Maintainer Wants', 'maintainerWants'],
+  ['files_to_change', 'Files To Change', 'filesToChange'],
+  ['open_questions', 'Open Questions', 'openQuestions'],
+  ['analysis', 'Analysis', 'analysis'],
+  ['labels', 'Labels', 'labels'],
+  ['language', 'Language', 'language'],
+  ['last_updated', 'Last Updated', 'lastUpdated'],
+];
+const COLUMN_BY_FILE_KEY = new Map(FIELDS.map(([column, fileKey]) => [fileKey, column]));
+const ALL_COLUMNS = FIELDS.map(([column]) => column);
+
 function isAirtableConfigured() {
-  return Boolean(config.airtable.apiKey && config.airtable.baseId);
+  // Historical name, kept so callers did not have to move: "is cloud storage
+  // configured".
+  return db.isConfigured();
 }
 
-function shouldFallbackToLocal(error) {
-  const code = error && typeof error === 'object' ? error.code : '';
-  return ['EAI_AGAIN', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT'].includes(code);
+function newId() {
+  return `rec${crypto.randomBytes(8).toString('hex')}`;
 }
 
-function shouldFallbackForSchema(error) {
-  const message = String(error && error.message ? error.message : '');
-  return message.includes('Unknown field name') || message.includes('Insufficient permissions to create new select option');
-}
-
-function getBase() {
-  if (!base) {
-    if (!isAirtableConfigured()) {
-      throw new Error('Airtable not configured — set AIRTABLE_API_KEY and AIRTABLE_BASE_ID in .env');
-    }
-    Airtable.configure({ apiKey: config.airtable.apiKey });
-    base = new Airtable().base(config.airtable.baseId);
+function parseAnalysis(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
   }
-  return base;
 }
 
-async function getTableSchema() {
-  if (!isAirtableConfigured()) return null;
-  if (!tableSchemaPromise) {
-    tableSchemaPromise = fetch(`https://api.airtable.com/v0/meta/bases/${config.airtable.baseId}/tables`, {
-      headers: { Authorization: `Bearer ${config.airtable.apiKey}` },
-      signal: AbortSignal.timeout(15_000),
-    }).then(async res => {
-      if (!res.ok) {
-        throw new Error(`Failed to fetch Airtable schema: ${res.status}`);
-      }
-      const data = await res.json();
-      const table = (data.tables || []).find(entry =>
-        entry.id === config.airtable.tableName || entry.name === config.airtable.tableName
-      );
-      if (!table) {
-        throw new Error(`Airtable table not found in schema: ${config.airtable.tableName}`);
-      }
-      return table;
-    }).catch(error => {
-      tableSchemaPromise = null;
-      throw error;
-    });
-  }
-  return tableSchemaPromise;
+function formatFiles(files) {
+  return (files || []).map(file => `${file.path}${file.why ? ` — ${file.why}` : ''}`).join('\n');
 }
 
-function normalizeChoiceValue(value, choices) {
-  if (!value || !Array.isArray(choices) || choices.length === 0) return value;
-
-  const exact = choices.find(choice => choice.name === value);
-  if (exact) return exact.name;
-
-  const normalized = String(value).trim().toLowerCase();
-  const caseInsensitive = choices.find(choice => String(choice.name).trim().toLowerCase() === normalized);
-  if (caseInsensitive) return caseInsensitive.name;
-
-  const synonyms = {
-    new: ['new', 'todo', 'to do', 'backlog', 'queued'],
-    'in progress': ['in progress', 'active', 'doing', 'working'],
-    done: ['done', 'complete', 'completed', 'shipped', 'closed'],
-    high: ['high', 'urgent', 'p1'],
-    medium: ['medium', 'normal', 'p2'],
-    low: ['low', 'later', 'p3'],
-  };
-
-  const candidates = synonyms[normalized] || [normalized];
-  const synonymMatch = choices.find(choice => candidates.includes(String(choice.name).trim().toLowerCase()));
-  return synonymMatch ? synonymMatch.name : null;
-}
-
-async function normalizeFieldsForAirtable(fields) {
-  const schema = await getTableSchema();
-  if (!schema) return fields;
-
-  const fieldMap = new Map((schema.fields || []).map(field => [field.name, field]));
-  const normalized = { ...fields };
-
-  for (const [name, value] of Object.entries(fields)) {
-    const field = fieldMap.get(name);
-    if (!field) {
-      delete normalized[name];
-      continue;
-    }
-
-    if ((field.type === 'singleSelect' || field.type === 'multipleSelects') && value) {
-      const mapped = normalizeChoiceValue(value, field.options?.choices || []);
-      if (mapped) {
-        normalized[name] = mapped;
-      } else {
-        delete normalized[name];
-      }
-    }
-  }
-
-  return normalized;
-}
-
+// Local-file row (human-readable keys) → the record shape callers use.
 function normalizeRecord(id, fields = {}) {
   return {
     id,
@@ -151,19 +120,28 @@ function normalizeRecord(id, fields = {}) {
   };
 }
 
-function parseAnalysis(value) {
-  if (!value) return null;
-  if (typeof value === 'object') return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
+// Postgres row → the same record shape.
+function recordFromRow(row) {
+  const fields = {};
+  for (const [column, fileKey] of FIELDS) {
+    if (row[column] !== null && row[column] !== undefined) fields[fileKey] = row[column];
   }
+  return normalizeRecord(row.id, fields);
 }
 
-function formatFiles(files) {
-  return (files || []).map(file => `${file.path}${file.why ? ` — ${file.why}` : ''}`).join('\n');
+// A record back into local-file keys, so the snapshot mirror stays readable.
+function fileRowFromRecord(record) {
+  const row = { id: record.id };
+  for (const [, fileKey, camelKey] of FIELDS) {
+    const value = camelKey === 'analysis'
+      ? (record.analysis ? JSON.stringify(record.analysis) : '')
+      : record[camelKey];
+    if (value !== undefined && value !== null && value !== '') row[fileKey] = value;
+  }
+  return row;
 }
+
+// ─── Local file store ─────────────────────────────────────────────────────────
 
 async function ensureLocalStore() {
   await fs.mkdir(LOCAL_DATA_DIR, { recursive: true });
@@ -249,6 +227,8 @@ function sortRecords(records) {
   });
 }
 
+// ─── Update shaping ───────────────────────────────────────────────────────────
+
 function toFields(updates, options = {}) {
   const fields = {};
   if (updates.status !== undefined) fields.Status = updates.status;
@@ -286,63 +266,32 @@ function appendActivity(existing, line) {
   return current ? `${current}\n${addition}` : addition;
 }
 
+// ─── Reads ────────────────────────────────────────────────────────────────────
+
+async function fetchAllRows() {
+  return db.query(`SELECT id, ${ALL_COLUMNS.join(', ')} FROM opportunities`);
+}
+
 async function listOpportunities() {
   const localRows = await readLocalRecords();
   const localRecords = localRows.map(row => normalizeRecord(row.id, row));
 
   if (isAirtableConfigured()) {
     try {
-      const table = getBase()(config.airtable.tableName);
-      const rows = await table.select({
-        sort: [{ field: 'Date', direction: 'desc' }],
-        pageSize: 100,
-      }).all();
-      const airtableRecords = rows.map(row => normalizeRecord(row.id, row.fields));
+      const rows = await fetchAllRows();
+      const cloudRecords = rows.map(recordFromRow);
       const merged = sortRecords(deduplicateRecords([
-        ...airtableRecords,
+        ...cloudRecords,
         ...localRecords.filter(row => isLocalId(row.id)),
       ]));
-      const snapshot = merged.map(item => ({
-        id: item.id,
-        Date: item.date,
-        Opportunity: item.opportunity,
-        Repo: item.repo,
-        Effort: item.effort,
-        Status: item.status,
-        Priority: item.priority,
-        Owner: item.owner,
-        'Due Date': item.dueDate,
-        'Issue URL': item.issueUrl,
-        'PR URL': item.prUrl,
-        'Suggested Action': item.suggestedAction,
-        'Next Step': item.nextStep,
-        'Activity Log': item.activityLog,
-        'Quick Plan': item.quickPlan,
-        'Why It Qualifies': item.whyItQualifies,
-        'Why It Matters': item.whyItMatters,
-        'Clarity Tip': item.clarityTip,
-        'Code Skeleton': item.codeSkeleton,
-        Source: item.source,
-        'Source URL': item.sourceUrl,
-        'Issue Updated At': item.issueUpdatedAt,
-        Score: item.score,
-        'Last Updated': item.lastUpdated,
-        Impact: item.impact,
-        Labels: item.labels,
-        Language: item.language,
-        'Maintainer Wants': item.maintainerWants,
-        'Files To Change': item.filesToChange,
-        'Open Questions': item.openQuestions,
-        Analysis: item.analysis ? JSON.stringify(item.analysis) : '',
-      }));
-      await syncLocalRecords(snapshot);
+      await syncLocalRecords(merged.map(fileRowFromRecord)).catch(() => {});
       return {
         opportunities: merged,
-        storage: 'airtable',
+        storage: 'postgres',
       };
     } catch (error) {
-      if (!shouldFallbackToLocal(error)) throw error;
-      console.warn(`  Airtable unavailable, using local store: ${error.code}`);
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Database unavailable, using local store: ${error.message}`);
     }
   }
 
@@ -358,9 +307,7 @@ async function loadTrackedRecords() {
   return { records: opportunities, seen: buildSeenMap(opportunities) };
 }
 
-// Everything we have ever recommended, keyed by issue URL. Reads Airtable
-// when configured (so it works on GitHub Actions and Vercel, where the local
-// file is empty on every run) and falls back to the local store otherwise.
+// Everything we have ever recommended, keyed by issue URL.
 async function loadSeenIssues() {
   const { opportunities } = await listOpportunities();
   return buildSeenMap(opportunities);
@@ -385,36 +332,11 @@ async function filterUnchangedDigest(digest, seenMap = null) {
   };
 }
 
+// ─── Writes ───────────────────────────────────────────────────────────────────
+
 async function updateOpportunity(id, updates, options = {}) {
   const fields = toFields(updates, options);
-  const isLocalRecord = String(id).startsWith('local-');
-  if (isLocalRecord) {
-    return serializeLocalWrite(async () => {
-      const rows = await readLocalRecords();
-      const idx = rows.findIndex(row => row.id === id);
-      if (idx === -1) {
-        throw new Error(`Opportunity not found: ${id}`);
-      }
-
-      rows[idx] = { ...rows[idx], ...fields };
-      await writeLocalRecords(rows);
-      return normalizeRecord(rows[idx].id, rows[idx]);
-    });
-  }
-
-  if (isAirtableConfigured()) {
-    try {
-      const table = getBase()(config.airtable.tableName);
-      const normalizedFields = await normalizeFieldsForAirtable(fields);
-      const updated = await table.update(id, normalizedFields);
-      return normalizeRecord(updated.id, updated.fields);
-    } catch (error) {
-      if (!shouldFallbackToLocal(error) && !shouldFallbackForSchema(error)) throw error;
-      console.warn(`  Airtable update fallback for ${id}: ${error.message}`);
-    }
-  }
-
-  return serializeLocalWrite(async () => {
+  const applyLocally = () => serializeLocalWrite(async () => {
     const rows = await readLocalRecords();
     const idx = rows.findIndex(row => row.id === id);
     if (idx === -1) {
@@ -425,10 +347,44 @@ async function updateOpportunity(id, updates, options = {}) {
     await writeLocalRecords(rows);
     return normalizeRecord(rows[idx].id, rows[idx]);
   });
+
+  if (isLocalId(id)) {
+    return applyLocally();
+  }
+
+  if (isAirtableConfigured()) {
+    try {
+      const assignments = [];
+      const params = [];
+      for (const [fileKey, value] of Object.entries(fields)) {
+        const column = COLUMN_BY_FILE_KEY.get(fileKey);
+        if (!column) continue;
+        params.push(value);
+        assignments.push(`${column} = $${params.length}`);
+      }
+      if (!assignments.length) {
+        const existing = await db.query('SELECT * FROM opportunities WHERE id = $1', [id]);
+        if (!existing.length) throw new Error(`Opportunity not found: ${id}`);
+        return recordFromRow(existing[0]);
+      }
+      params.push(id);
+      const rows = await db.query(
+        `UPDATE opportunities SET ${assignments.join(', ')} WHERE id = $${params.length} RETURNING *`,
+        params,
+      );
+      if (!rows.length) throw new Error(`Opportunity not found: ${id}`);
+      return recordFromRow(rows[0]);
+    } catch (error) {
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Database update fallback for ${id}: ${error.message}`);
+    }
+  }
+
+  return applyLocally();
 }
 
 // Apply follow-up changes to records we already track: new upstream activity,
-// closure, or a claim. Each entry: { recordId, activityLog, line, status?, issueUpdatedAt? }.
+// closure, or a claim. Each entry: { recordId, activityLog, line, status?, issueUpdatedAt?, prUrl?, owner?, touch? }.
 async function recordIssueEvents(events = []) {
   let applied = 0;
   for (const event of events) {
@@ -467,13 +423,6 @@ function derivePriority(item) {
   return 'Low';
 }
 
-/**
- * Save a digest result to Airtable.
- * Table columns expected:
- *   Date (date), Opportunity (text), Repo (text), Effort (single select),
- *   Why It Qualifies (long text), Suggested Action (long text),
- *   Clarity Tip (long text), Issue URL (url), Quick Plan (long text), Status (single select)
- */
 async function saveDigest(digest) {
   const createdAt = new Date().toISOString();
   if (!(digest.contest_digest || []).length) {
@@ -513,7 +462,7 @@ async function saveDigest(digest) {
     ...fields,
   }));
 
-  const describe = rows => rows.map(row => ({ id: row.id, issueUrl: row['Issue URL'] || row.fields?.['Issue URL'] || '' }));
+  const describe = rows => rows.map(row => ({ id: row.id, issueUrl: row['Issue URL'] || '' }));
 
   if (!isAirtableConfigured()) {
     await prependLocalRecords(localRecords);
@@ -522,45 +471,47 @@ async function saveDigest(digest) {
   }
 
   try {
-    const table = getBase()(config.airtable.tableName);
-    const normalizedRecords = await Promise.all(records.map(fields => normalizeFieldsForAirtable(fields)));
-    const airtableRecords = normalizedRecords.map(fields => ({
-      fields,
-    }));
+    // One multi-row INSERT for the whole digest.
+    const columns = ['id', ...ALL_COLUMNS];
+    const params = [];
+    const tuples = records.map(fields => {
+      const values = [newId()];
+      for (const [, fileKey] of FIELDS) {
+        values.push(fields[fileKey] !== undefined ? fields[fileKey] : null);
+      }
+      const placeholders = values.map(value => {
+        params.push(value);
+        return `$${params.length}`;
+      });
+      return `(${placeholders.join(', ')})`;
+    });
+    const rows = await db.query(
+      `INSERT INTO opportunities (${columns.join(', ')}) VALUES ${tuples.join(', ')} RETURNING id, issue_url`,
+      params,
+    );
 
-    // Airtable max 10 records per create call
-    const created = [];
-    for (let i = 0; i < airtableRecords.length; i += 10) {
-      const batch = await table.create(airtableRecords.slice(i, i + 10));
-      created.push(...batch);
-    }
-
-    // Mirror Airtable ids locally so the snapshot and the buttons agree.
-    const mirrored = created.map((row, index) => ({ ...localRecords[index], id: row.id }));
+    // Mirror the stored ids locally so the snapshot and the buttons agree.
+    const mirrored = rows.map((row, index) => ({ ...localRecords[index], id: row.id }));
     await prependLocalRecords(mirrored.length ? mirrored : localRecords);
-    console.log(`  Saved ${airtableRecords.length} opportunities to Airtable`);
-    return created.map(row => ({ id: row.id, issueUrl: row.fields?.['Issue URL'] || row.get?.('Issue URL') || '' }));
+    console.log(`  Saved ${rows.length} opportunities to the database`);
+    return rows.map(row => ({ id: row.id, issueUrl: row.issue_url || '' }));
   } catch (error) {
-    if (!shouldFallbackToLocal(error) && !shouldFallbackForSchema(error)) throw error;
-    console.warn(`  Airtable save fallback: ${error.message}`);
+    if (!db.isNetworkError(error)) throw error;
+    console.warn(`  Database save fallback: ${error.message}`);
     await prependLocalRecords(localRecords);
     console.log(`  Saved ${localRecords.length} opportunities to local store`);
     return describe(localRecords);
   }
 }
 
-// Delete Airtable rows by id (used by the dedupe script). Local mirror is
-// pruned too so the dashboard does not resurrect them.
+// Delete rows by id (used by the dedupe script). Local mirror is pruned too so
+// the dashboard does not resurrect them.
 async function deleteOpportunities(ids = []) {
   if (!ids.length) return 0;
   let removed = 0;
   if (isAirtableConfigured()) {
-    const table = getBase()(config.airtable.tableName);
-    for (let i = 0; i < ids.length; i += 10) {
-      const batch = ids.slice(i, i + 10);
-      await table.destroy(batch);
-      removed += batch.length;
-    }
+    const rows = await db.query('DELETE FROM opportunities WHERE id = ANY($1) RETURNING id', [ids]);
+    removed = rows.length;
   }
   await serializeLocalWrite(async () => {
     const rows = await readLocalRecords();
@@ -576,9 +527,8 @@ async function listRawOpportunities() {
     const rows = await readLocalRecords();
     return rows.map(row => normalizeRecord(row.id, row));
   }
-  const table = getBase()(config.airtable.tableName);
-  const rows = await table.select({ pageSize: 100 }).all();
-  return rows.map(row => normalizeRecord(row.id, row.fields));
+  const rows = await fetchAllRows();
+  return rows.map(recordFromRow);
 }
 
 module.exports = {

@@ -50,10 +50,7 @@ jobs:
           GROQ_MODELS: ${{ vars.GROQ_MODELS }}
           GROQ_TPM: ${{ vars.GROQ_TPM }}  # optional; unset = read from the API
           XAI_MODELS: ${{ vars.XAI_MODELS }}
-          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
-          AIRTABLE_SUBSCRIBERS_TABLE: ${{ secrets.AIRTABLE_SUBSCRIBERS_TABLE }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}  # second bot (optional)
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
