@@ -7,16 +7,28 @@ const path = require('path');
 
 const KEYS = ['AIRTABLE_API_KEY', 'AIRTABLE_BASE_ID', 'AIRTABLE_SUBSCRIBERS_TABLE', 'DAN_AGENT_DATA_DIR'];
 
-async function load(t, env) {
+async function load(t, env, dbStub = null) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'danagent-profile-'));
   const saved = Object.fromEntries(KEYS.map(key => [key, process.env[key]]));
   for (const key of KEYS) delete process.env[key];
   // Empty strings, not deletions: config.js re-reads .env for absent keys.
-  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '', AIRTABLE_SUBSCRIBERS_TABLE: '' }, env);
+  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, AIRTABLE_API_KEY: '', AIRTABLE_BASE_ID: '', AIRTABLE_SUBSCRIBERS_TABLE: '', DATABASE_URL: '' }, env);
+  const dbPath = path.resolve(__dirname, '..', 'src', 'db.js');
+  const savedDb = require.cache[dbPath];
   for (const mod of ['config', 'subscribers']) delete require.cache[path.resolve(__dirname, '..', 'src', `${mod}.js`)];
+  if (dbStub) {
+    delete require.cache[dbPath];
+    require.cache[dbPath] = {
+      id: dbPath, filename: dbPath, loaded: true,
+      exports: { isConfigured: () => true, isNetworkError: error => Boolean(error && error.networkish), query: dbStub },
+    };
+  }
   const prevFetch = global.fetch;
   t.after(async () => {
     global.fetch = prevFetch;
+    if (dbStub) {
+      if (savedDb) require.cache[dbPath] = savedDb; else delete require.cache[dbPath];
+    }
     for (const key of KEYS) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -50,58 +62,61 @@ test('saving a profile never creates a subscriber', async t => {
   assert.deepEqual(await subs.readSubscribers(), []);
 });
 
-const AIRTABLE = { AIRTABLE_API_KEY: 'k', AIRTABLE_BASE_ID: 'app1', AIRTABLE_SUBSCRIBERS_TABLE: 'Subscribers' };
+// ─── Database path (stubbed db module) ────────────────────────────────────────
 
-test('on Airtable the profile is saved with a PATCH of that one field, never a create', async t => {
-  const subs = await load(t, AIRTABLE);
+const ROW = { chat_id: '42', bot_id: 'b1', username: 'ada', subscribed_at: '2026-01-01T00:00:00Z', profile: JSON.stringify(PROFILE) };
+
+test('on the database the profile is saved with an UPDATE of that one column, never an insert', async t => {
   const calls = [];
-  global.fetch = async (url, options) => {
-    calls.push({ method: options.method, url: String(url), body: options.body ? JSON.parse(options.body) : null });
-    if (options.method === 'GET') return { ok: true, json: async () => ({ records: [{ id: 'rec1', fields: { ChatId: '42', BotId: 'b1', Profile: JSON.stringify(PROFILE) } }] }) };
-    return { ok: true, json: async () => ({ id: 'rec1', fields: {} }) };
-  };
+  const subs = await load(t, {}, async (text, params) => {
+    calls.push({ text: text.replace(/\s+/g, ' ').trim(), params });
+    return /^SELECT/i.test(text) ? [ROW] : [];
+  });
 
   await subs.setSubscriberProfile(42, 'b1', PROFILE);
 
-  const patch = calls.find(call => call.method === 'PATCH');
-  assert.match(patch.url, /\/Subscribers\/rec1$/);
-  assert.deepEqual(Object.keys(patch.body.fields), ['Profile']);
-  assert.equal(JSON.parse(patch.body.fields.Profile).github.login, 'ada');
-  assert.ok(!calls.some(call => call.method === 'POST'), 'no record is created');
+  const update = calls.find(call => /^UPDATE/i.test(call.text));
+  assert.match(update.text, /^UPDATE subscribers SET profile = \$1 WHERE chat_id = \$2 AND bot_id = \$3$/);
+  assert.equal(JSON.parse(update.params[0]).github.login, 'ada');
+  assert.deepEqual(update.params.slice(1), ['42', 'b1']);
+  assert.ok(!calls.some(call => /INSERT/i.test(call.text)), 'no row is created');
 
   const read = await subs.getSubscriber(42, 'b1');
   assert.equal(read.profile.github.login, 'ada', 'the stored JSON is parsed back');
+
+  calls.length = 0;
+  await subs.setSubscriberProfile(42, 'b1', null);
+  assert.equal(calls.find(call => /^UPDATE/i.test(call.text)).params[0], null, 'clearing stores NULL');
 });
 
-test('re-subscribing on Airtable leaves the Profile column out of the write', async t => {
-  const subs = await load(t, AIRTABLE);
-  const writes = [];
-  global.fetch = async (url, options) => {
-    if (options.method === 'GET') return { ok: true, json: async () => ({ records: [{ id: 'rec1', fields: { ChatId: '42', BotId: 'b1', 'Subscribed At': '2026-01-01T00:00:00Z' } }] }) };
-    writes.push(JSON.parse(options.body));
-    return { ok: true, json: async () => ({ id: 'rec1', fields: {} }) };
-  };
+test('re-subscribing on the database leaves the profile column out of the write', async t => {
+  const calls = [];
+  const subs = await load(t, {}, async (text, params) => {
+    calls.push({ text: text.replace(/\s+/g, ' ').trim(), params });
+    return /^SELECT/i.test(text) ? [ROW] : [];
+  });
 
-  await subs.upsertSubscriber({ chatId: 42, botId: 'b1', username: 'ada' });
-  assert.equal(writes.length, 1);
-  assert.ok(!('Profile' in writes[0].fields), 'tables without the column keep working');
+  await subs.upsertSubscriber({ chatId: 42, botId: 'b1', username: 'ada_new' });
+
+  const write = calls.find(call => /^(UPDATE|INSERT)/i.test(call.text));
+  assert.match(write.text, /^UPDATE subscribers SET/);
+  assert.ok(!/profile/i.test(write.text), 'the profile column is never part of a subscription write');
+  assert.ok(write.params.includes('ada_new'));
+  assert.ok(write.params.includes('2026-01-01T00:00:00Z'), 'subscribed_at is preserved');
 });
 
-test('a missing Profile column is reported as such, and other Airtable errors surface', async t => {
-  const subs = await load(t, AIRTABLE);
-  let patchStatus = 422;
-  let patchBody = '{"error":{"type":"UNKNOWN_FIELD_NAME","message":"Unknown field name: \\"Profile\\""}}';
-  global.fetch = async (url, options) => {
-    if (options.method === 'GET') return { ok: true, json: async () => ({ records: [{ id: 'rec1', fields: { ChatId: '42', BotId: 'b1' } }] }) };
-    return { ok: false, status: patchStatus, text: async () => patchBody };
-  };
+test('database errors surface, and saving for a stranger says not_subscribed', async t => {
+  const broken = await load(t, {}, async text => {
+    if (/^SELECT/i.test(text)) return [ROW];
+    throw new Error('relation "subscribers" does not exist');
+  });
+  await assert.rejects(() => broken.setSubscriberProfile(42, 'b1', PROFILE), /relation "subscribers" does not exist/);
 
-  await assert.rejects(() => subs.setSubscriberProfile(42, 'b1', PROFILE), error => error.code === 'missing_column');
+  const empty = await load(t, {}, async () => []);
+  await assert.rejects(() => empty.setSubscriberProfile(7, 'b1', PROFILE), error => error instanceof empty.ProfileStorageError && error.code === 'not_subscribed');
 
-  patchStatus = 500;
-  patchBody = 'boom';
-  await assert.rejects(() => subs.setSubscriberProfile(42, 'b1', PROFILE), /Airtable PATCH 500/);
-
-  global.fetch = async (url, options) => (options.method === 'GET' ? { ok: true, json: async () => ({ records: [] }) } : { ok: true, json: async () => ({}) });
-  await assert.rejects(() => subs.setSubscriberProfile(7, 'b1', PROFILE), error => error.code === 'not_subscribed');
+  // A network failure falls back to the local store instead of erroring.
+  const offline = await load(t, {}, async () => { throw Object.assign(new Error('fetch failed'), { networkish: true }); });
+  await offline.upsertSubscriber({ chatId: 9, botId: 'b1', username: 'offline' });
+  assert.equal((await offline.readSubscribers('b1'))[0].username, 'offline');
 });

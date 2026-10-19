@@ -74,7 +74,7 @@ async function loadItems() {
   state.items = data.opportunities || [];
   state.learning = data.learning;
   state.loaded = true;
-  $('storage-status').textContent = data.storage === 'airtable' ? 'Saved to Airtable' : data.storage === 'local' ? 'Saved locally' : 'Storage connected';
+  $('storage-status').textContent = data.storage === 'postgres' ? 'Saved to Neon' : data.storage === 'local' ? 'Saved locally' : 'Storage connected';
   renderQueue(); renderRepos(); renderRanking();
 }
 async function loadRepos() { state.repos = (await api('/api/repositories')).repositories || []; renderRepos(); updateCounts(); }

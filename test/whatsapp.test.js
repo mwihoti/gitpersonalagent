@@ -260,7 +260,7 @@ test("the digest caps the closed/claimed list, labels repeats, and warns when no
   const messages = buildDigestMessages({
     date: "2026-09-30",
     contest_digest: [item(1), item(2)],
-    persistence_error: "Airtable base is at its record limit",
+    persistence_error: "storage is at its record limit",
     changes: {
       new: ["https://github.com/o/r/issues/1"],
       updated: [],
@@ -275,7 +275,7 @@ test("the digest caps the closed/claimed list, labels repeats, and warns when no
   const summary = messages[0];
 
   assert.match(summary, /New 1 · Updated 0 · Seen before 1 · Closed 0 · Claimed 32/);
-  assert.match(summary, /⚠ New items were not saved: Airtable base is at its record limit/);
+  assert.match(summary, /⚠ New items were not saved: storage is at its record limit/);
   assert.match(summary, /<b>Seen before, still worth a look<\/b>/);
   assert.match(summary, /stale claim by ghost/);
   assert.equal((summary.match(/Taken \d+/g) || []).length, 6);
@@ -288,7 +288,7 @@ test("the digest caps the closed/claimed list, labels repeats, and warns when no
 test("a chat subscribed to two bots gets the digest once, through the requested bot", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "danagent-twobots-"));
   const saved = { dir: process.env.DAN_AGENT_DATA_DIR, t1: process.env.TELEGRAM_BOT_TOKEN, t2: process.env.TELEGRAM_BOT_TOKEN_2, chat: process.env.TELEGRAM_CHAT_ID, reply: process.env.SCAN_REPLY_BOT };
-  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, TELEGRAM_BOT_TOKEN: "111:AAA", TELEGRAM_BOT_TOKEN_2: "222:BBB", TELEGRAM_CHAT_ID: "", AIRTABLE_API_KEY: "", AIRTABLE_BASE_ID: "" });
+  Object.assign(process.env, { DAN_AGENT_DATA_DIR: dir, TELEGRAM_BOT_TOKEN: "111:AAA", TELEGRAM_BOT_TOKEN_2: "222:BBB", TELEGRAM_CHAT_ID: "", AIRTABLE_API_KEY: "", AIRTABLE_BASE_ID: "", DATABASE_URL: "" });
   for (const mod of ["../src/whatsapp", "../src/config", "../src/subscribers", "../src/bots", "../src/airtable"]) delete require.cache[require.resolve(mod)];
   const fresh = require("../src/whatsapp");
   const sent = [];
@@ -339,8 +339,11 @@ test("Telegram subscribers can opt in and out", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "danagent-subscribers-"));
   const previousDataDir = process.env.DAN_AGENT_DATA_DIR;
   const previousChatId = process.env.TELEGRAM_CHAT_ID;
+  const previousDb = process.env.DATABASE_URL;
   process.env.DAN_AGENT_DATA_DIR = dir;
   process.env.TELEGRAM_CHAT_ID = "";
+  process.env.DATABASE_URL = "";
+  process.env.AIRTABLE_API_KEY = "";
 
   try {
     const whatsappPath = require.resolve("../src/whatsapp");
@@ -372,6 +375,8 @@ test("Telegram subscribers can opt in and out", async () => {
     } else {
       process.env.TELEGRAM_CHAT_ID = previousChatId;
     }
+    if (previousDb === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDb;
   }
 });
 
@@ -408,6 +413,7 @@ test("claim button updates the record and answers the callback", async () => {
   process.env.DAN_AGENT_DATA_DIR = dir;
   process.env.TELEGRAM_CHAT_ID = "777";
   process.env.AIRTABLE_API_KEY = "";
+  process.env.DATABASE_URL = "";
   process.env.AIRTABLE_BASE_ID = "";
   for (const mod of ["../src/whatsapp", "../src/config", "../src/subscribers", "../src/airtable"]) {
     delete require.cache[require.resolve(mod)];

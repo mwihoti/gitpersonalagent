@@ -538,7 +538,7 @@ async function runScan(options = {}) {
         logger.warn(`  Persistence skipped: ${e.message}`);
         // Surface it: unsaved items get no buttons and will look new again tomorrow.
         digest.persistence_error = /record limit|over its record/i.test(e.message)
-          ? 'Airtable base is at its record limit'
+          ? 'storage is at its record limit'
           : String(e.message).slice(0, 160);
       }
       const baselines = tracking.baselineEvents(annotated).map(event => ({ ...event, touch: false }));

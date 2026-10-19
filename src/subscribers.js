@@ -1,29 +1,16 @@
 'use strict';
-// Durable subscriber storage.
+// Durable subscriber storage: Neon Postgres, with the local JSON fallback for
+// development and network blips. (Previously Airtable; the interface and the
+// local file format are unchanged.)
 //
-// Uses Airtable when AIRTABLE_API_KEY + AIRTABLE_BASE_ID are set (required for
-// serverless/webhook deployments where the filesystem is ephemeral), and falls
-// back to a local JSON file for local development or when Airtable is briefly
-// unreachable.
-//
-// Airtable table: `Subscribers` (override with AIRTABLE_SUBSCRIBERS_TABLE)
-//   ChatId (single line text)  ← unique key
-//   Type (single line text)
-//   Title (single line text)
-//   Username (single line text)
-//   First Name (single line text)
-//   Last Name (single line text)
-//   Subscribed At (single line text — ISO timestamp)
-//   Last Seen At (single line text — ISO timestamp)
-//   Profile (long text — JSON, optional): GitHub-derived skills and anything the
-//     person set with /skills. Written with PATCH only, so it works even when
-//     the base cannot create new records. Create the column with
-//     `npm run setup -- --subscribers`.
-const config = require('./config');
+// Table `subscribers`:
+//   chat_id + bot_id  the key: the same person on two bots is two
+//                     subscriptions, and each bot may only message its own
+//   profile           JSON: GitHub-derived skills and what the person set with
+//                     /skills — written only by setSubscriberProfile, so
+//                     re-subscribing never wipes it
+const db = require('./db');
 
-// `fs`/`path` are pulled in lazily so the Airtable path stays runtime-agnostic
-// (Cloudflare Workers and other edge runtimes have no filesystem). Only the
-// local-development fallback touches them.
 function nodeFs() {
   return require('fs/promises');
 }
@@ -39,19 +26,6 @@ function localPaths() {
 }
 
 let localWriteQueue = Promise.resolve();
-
-function airtableEnabled() {
-  return Boolean(config.airtable.apiKey && config.airtable.baseId);
-}
-
-function isNetworkError(error) {
-  const code = error && typeof error === 'object' ? error.code : '';
-  const name = error && typeof error === 'object' ? error.name : '';
-  return (
-    name === 'TimeoutError' ||
-    ['EAI_AGAIN', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT'].includes(code)
-  );
-}
 
 function normalizeChatId(chatId) {
   return String(chatId || '').trim();
@@ -76,109 +50,40 @@ class ProfileStorageError extends Error {
   }
 }
 
-// ─── Record <-> Airtable field mapping ───────────────────────────────────────
-
-function toRecord(recordId, fields = {}) {
-  return {
-    recordId,
-    chatId: normalizeChatId(fields.ChatId),
-    botId: String(fields.BotId || '').trim(),
-    type: fields.Type || '',
-    title: fields.Title || '',
-    username: fields.Username || '',
-    firstName: fields['First Name'] || '',
-    lastName: fields['Last Name'] || '',
-    subscribedAt: fields['Subscribed At'] || '',
-    lastSeenAt: fields['Last Seen At'] || '',
-    profile: parseProfile(fields.Profile),
-  };
-}
-
-function toFields(record) {
-  const fields = {
-    ChatId: normalizeChatId(record.chatId),
-    BotId: String(record.botId || '').trim(),
-    Type: record.type || '',
-    Title: record.title || '',
-    Username: record.username || '',
-    'First Name': record.firstName || '',
-    'Last Name': record.lastName || '',
-    'Subscribed At': record.subscribedAt || '',
-    'Last Seen At': record.lastSeenAt || '',
-  };
-  // Only sent when the caller supplies one, so tables without the column keep
-  // working and re-subscribing never wipes a profile.
-  if (record.profile !== undefined) fields.Profile = record.profile ? JSON.stringify(record.profile) : '';
-  return fields;
-}
-
-// A chat is identified by (botId, chatId): the same person messaging two bots is
-// two separate subscriptions, and each bot may only message its own.
+// A chat is identified by (botId, chatId). Records written before multi-bot
+// support have no botId; they belong to the primary bot.
 function sameSubscription(record, chatId, botId) {
   if (normalizeChatId(record.chatId) !== normalizeChatId(chatId)) return false;
   const recordBot = String(record.botId || '').trim();
   const wantedBot = String(botId || '').trim();
-  // Records written before multi-bot support have no BotId; they belong to the
-  // primary bot, which is the only bot that existed when they were created.
   if (!recordBot) return true;
   if (!wantedBot) return true;
   return recordBot === wantedBot;
 }
 
-// ─── Airtable REST helpers ────────────────────────────────────────────────────
-
-function airtableUrl(suffix = '') {
-  const table = encodeURIComponent(config.airtable.subscribersTable);
-  return `https://api.airtable.com/v0/${config.airtable.baseId}/${table}${suffix}`;
+function recordFromRow(row) {
+  return {
+    chatId: normalizeChatId(row.chat_id),
+    botId: String(row.bot_id || '').trim(),
+    type: row.type || '',
+    title: row.title || '',
+    username: row.username || '',
+    firstName: row.first_name || '',
+    lastName: row.last_name || '',
+    subscribedAt: row.subscribed_at || '',
+    lastSeenAt: row.last_seen_at || '',
+    ...(row.profile ? { profile: parseProfile(row.profile) } : {}),
+  };
 }
 
-async function airtableRequest(method, suffix, body) {
-  const res = await fetch(airtableUrl(suffix), {
-    method,
-    headers: {
-      Authorization: `Bearer ${config.airtable.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    const error = new Error(`Airtable ${method} ${res.status}: ${text.slice(0, 200)}`);
-    error.status = res.status;
-    throw error;
-  }
-  if (method === 'DELETE') return res.json().catch(() => ({}));
-  return res.json();
+async function dbReadAll() {
+  const rows = await db.query('SELECT * FROM subscribers');
+  return rows.map(recordFromRow).filter((item) => item.chatId);
 }
 
-async function airtableReadAll() {
-  const records = [];
-  let offset;
-  do {
-    const query = new URLSearchParams({ pageSize: '100' });
-    if (offset) query.set('offset', offset);
-    const data = await airtableRequest('GET', `?${query.toString()}`);
-    for (const row of data.records || []) {
-      records.push(toRecord(row.id, row.fields));
-    }
-    offset = data.offset;
-  } while (offset);
-  return records.filter((item) => item.chatId);
-}
-
-async function airtableFind(chatId, botId) {
-  const normalized = normalizeChatId(chatId);
-  const formula = `{ChatId}="${normalized.replace(/"/g, '\\"')}"`;
-  const query = new URLSearchParams({
-    filterByFormula: formula,
-    // The same chat can be subscribed to several bots, so filter by chat in
-    // Airtable and pick the right bot's row here.
-    pageSize: '100',
-  });
-  const data = await airtableRequest('GET', `?${query.toString()}`);
-  const rows = (data.records || []).map((row) => toRecord(row.id, row.fields));
-  return rows.find((row) => sameSubscription(row, normalized, botId)) || null;
+async function dbFind(chatId, botId) {
+  const rows = await db.query('SELECT * FROM subscribers WHERE chat_id = $1', [normalizeChatId(chatId)]);
+  return rows.map(recordFromRow).find((row) => sameSubscription(row, chatId, botId)) || null;
 }
 
 // ─── Local file fallback ──────────────────────────────────────────────────────
@@ -252,12 +157,12 @@ async function localRemove(chatId, botId) {
 // subscription across all bots.
 async function readSubscribers(botId) {
   let records;
-  if (airtableEnabled()) {
+  if (db.isConfigured()) {
     try {
-      records = await airtableReadAll();
+      records = await dbReadAll();
     } catch (error) {
-      if (!isNetworkError(error)) throw error;
-      console.warn(`  Subscribers: Airtable unavailable, reading local store (${error.message})`);
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Subscribers: database unavailable, reading local store (${error.message})`);
     }
   }
   if (!records) records = await localReadAll();
@@ -267,38 +172,63 @@ async function readSubscribers(botId) {
   return records.filter((item) => sameSubscription(item, item.chatId, wanted));
 }
 
+async function getSubscriber(chatId, botId) {
+  const chat = normalizeChatId(chatId);
+  if (!chat) return null;
+  if (db.isConfigured()) {
+    try {
+      return await dbFind(chat, botId);
+    } catch (error) {
+      if (!db.isNetworkError(error)) throw error;
+    }
+  }
+  const records = await localReadAll();
+  return records.find((item) => sameSubscription(item, chat, botId)) || null;
+}
+
 async function upsertSubscriber(record) {
   const chatId = normalizeChatId(record.chatId);
   if (!chatId) throw new Error('Cannot subscribe a chat without an id');
 
   const now = new Date().toISOString();
 
-  if (airtableEnabled()) {
+  if (db.isConfigured()) {
     try {
-      const existing = await airtableFind(chatId, record.botId);
+      const existing = await dbFind(chatId, record.botId);
       const merged = {
         ...record,
         chatId,
+        botId: String(record.botId || '').trim(),
         subscribedAt: existing?.subscribedAt || record.subscribedAt || now,
         lastSeenAt: now,
       };
-      const fields = toFields(merged);
+      const params = [
+        merged.chatId, merged.botId, merged.type || '', merged.title || '',
+        merged.username || '', merged.firstName || '', merged.lastName || '',
+        merged.subscribedAt, merged.lastSeenAt,
+      ];
       if (existing) {
-        const updated = await airtableRequest('PATCH', `/${existing.recordId}`, {
-          fields,
-          typecast: true,
-        });
-        return toRecord(updated.id, updated.fields);
+        // The profile column is deliberately not touched: re-subscribing must
+        // never wipe what the person taught the bot.
+        await db.query(
+          `UPDATE subscribers SET chat_id = $1, bot_id = $2, type = $3, title = $4, username = $5,
+             first_name = $6, last_name = $7, subscribed_at = $8, last_seen_at = $9
+           WHERE chat_id = $10 AND bot_id = $11`,
+          [...params, existing.chatId, existing.botId],
+        );
+      } else {
+        await db.query(
+          `INSERT INTO subscribers (chat_id, bot_id, type, title, username, first_name, last_name, subscribed_at, last_seen_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (chat_id, bot_id) DO UPDATE SET type = $3, title = $4, username = $5,
+             first_name = $6, last_name = $7, last_seen_at = $9`,
+          params,
+        );
       }
-      const created = await airtableRequest('POST', '', {
-        records: [{ fields }],
-        typecast: true,
-      });
-      const row = created.records[0];
-      return toRecord(row.id, row.fields);
+      return (await dbFind(chatId, record.botId)) || merged;
     } catch (error) {
-      if (!isNetworkError(error)) throw error;
-      console.warn(`  Subscribers: Airtable write failed, using local store (${error.message})`);
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Subscribers: database write failed, using local store (${error.message})`);
     }
   }
 
@@ -314,58 +244,40 @@ async function removeSubscriber(chatId, botId) {
   const normalized = normalizeChatId(chatId);
   if (!normalized) return false;
 
-  if (airtableEnabled()) {
+  if (db.isConfigured()) {
     try {
-      const existing = await airtableFind(normalized, botId);
+      const existing = await dbFind(normalized, botId);
       if (!existing) return false;
-      await airtableRequest('DELETE', `/${existing.recordId}`);
+      await db.query('DELETE FROM subscribers WHERE chat_id = $1 AND bot_id = $2', [existing.chatId, existing.botId]);
       return true;
     } catch (error) {
-      if (!isNetworkError(error)) throw error;
-      console.warn(`  Subscribers: Airtable delete failed, using local store (${error.message})`);
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Subscribers: database delete failed, using local store (${error.message})`);
     }
   }
 
   return localRemove(normalized, botId);
 }
 
-async function getSubscriber(chatId, botId) {
-  const chat = normalizeChatId(chatId);
-  if (!chat) return null;
-  if (airtableEnabled()) {
-    try {
-      return await airtableFind(chat, botId);
-    } catch (error) {
-      if (!isNetworkError(error)) throw error;
-    }
-  }
-  const records = await localReadAll();
-  return records.find((item) => sameSubscription(item, chat, botId)) || null;
-}
-
 // Saves (or, with null, clears) a subscriber's profile. The subscriber must
-// already exist; this never creates a row, so it keeps working when the base is
-// at its record limit.
+// already exist; this never creates a row.
 async function setSubscriberProfile(chatId, botId, profile) {
   const chat = normalizeChatId(chatId);
   const value = profile && typeof profile === 'object' ? { ...profile, updatedAt: new Date().toISOString() } : null;
 
-  if (airtableEnabled()) {
+  if (db.isConfigured()) {
     try {
-      const existing = await airtableFind(chat, botId);
+      const existing = await dbFind(chat, botId);
       if (!existing) throw new ProfileStorageError('not_subscribed', 'Subscribe first');
-      await airtableRequest('PATCH', `/${existing.recordId}`, {
-        fields: { Profile: value ? JSON.stringify(value) : '' },
-        typecast: true,
-      });
+      await db.query(
+        'UPDATE subscribers SET profile = $1 WHERE chat_id = $2 AND bot_id = $3',
+        [value ? JSON.stringify(value) : null, existing.chatId, existing.botId],
+      );
       return value;
     } catch (error) {
       if (error instanceof ProfileStorageError) throw error;
-      if (/UNKNOWN_FIELD_NAME|Unknown field name/i.test(String(error.message))) {
-        throw new ProfileStorageError('missing_column', 'The Subscribers table has no "Profile" column');
-      }
-      if (!isNetworkError(error)) throw error;
-      console.warn(`  Subscribers: Airtable profile write failed, using local store (${error.message})`);
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Subscribers: database profile write failed, using local store (${error.message})`);
     }
   }
 
