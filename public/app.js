@@ -71,6 +71,9 @@ async function api(url, options = {}, retry = true) {
   if (options.body) headers.set('Content-Type', 'application/json');
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401 && retry) {
+    // Only re-prompt someone whose key was rejected. A first-time visitor gets
+    // the locked welcome instead of a modal shoved over an unread page.
+    if (!state.key) { const locked = new Error('locked'); locked.locked = true; throw locked; }
     if (await requestKey()) return api(url, options, false);
   }
   let data;
@@ -546,10 +549,20 @@ function navigate(hash, force = false) {
   if (location.hash !== hash) history.pushState(null,'',hash);
   showRoute(hash,force);
 }
+// What a visitor without a key sees: an invitation, not an interrogation.
+function renderLockedWelcome() {
+  const bot = state.health.config?.botUsername;
+  $('queue-body').setAttribute('aria-busy','false');
+  $('queue-body').innerHTML = `<div class="empty-state"><strong>This workspace is private</strong><p>Get your own daily Bitcoin issues instead: open the Telegram bot, send <code>/start</code>, and it picks open issues that fit your skills. <code>/dashboard</code> there gives you a key for this page.</p><div class="dialog-actions" style="justify-content:flex-start">${bot ? `<a class="button" href="https://t.me/${escapeHtml(bot)}" target="_blank" rel="noreferrer">Open the bot</a>` : ''}<button class="button button-secondary" type="button" data-enter-key>I have a key</button></div></div>`;
+  $('page-subtitle').textContent = 'Locked — get a key from the Telegram bot';
+}
+
 async function init() {
   const results = await Promise.allSettled([loadItems(),loadRepos(),loadHealth()]);
   const error = results.find(result=>result.status==='rejected');
-  if (error) {
+  if (error && error.reason && error.reason.locked) {
+    renderLockedWelcome();
+  } else if (error) {
     showNotice(error.reason.message,true);
     if (!state.loaded) { $('queue-body').setAttribute('aria-busy','false'); $('queue-body').innerHTML = '<div class="empty-state"><strong>Couldn’t load your queue</strong><p>Check your connection or workspace key, then try again.</p><button class="button button-secondary" type="button" data-retry>Try again</button></div>'; }
   } else {
@@ -605,6 +618,7 @@ document.addEventListener('click',async event=>{
     if(button.hasAttribute('data-close-dialog'))button.closest('dialog').close('cancel');
     if(button.hasAttribute('data-scan'))await scan();
     if(button.hasAttribute('data-retry'))await init();
+    if(button.hasAttribute('data-enter-key')){if(await requestKey())init();}
     if(button.hasAttribute('data-more')){state.limit=state.items.length;renderQueue();}
     if(button.hasAttribute('data-more-repos')){state.repoLimit=repositoryChoices().length;renderRepos();}
     if(button.dataset.status){state.filters.status=button.dataset.status;state.limit=20;renderQueue();}
