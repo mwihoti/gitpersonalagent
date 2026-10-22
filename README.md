@@ -248,6 +248,7 @@ Bot mode runs the daily scheduler and listens for Telegram commands:
 | `/level newcomer` | Anyone | Set newcomer, intermediate, or experienced (`/level clear` goes back to GitHub's view) |
 | `/match` | Anyone | Issues that fit you right now, each read closely and unclaimed |
 | `/me` / `/forget` | Anyone | Show or delete what the bot knows about you |
+| `/dashboard` | Anyone | Issues your personal key for the web dashboard, with a link that signs you in directly; sending it again replaces the key |
 | `/scan` | Admin chat only | Runs the normal top-priority scan immediately (15 issues) |
 | `/scan 25` | Admin chat only | Same, asking for 25 issues; works with any mode, e.g. `/scan all 30` |
 | `/scan all` | Admin chat only | Scans a broader set of open issues |
@@ -566,6 +567,14 @@ Things worth knowing:
 - **Cost.** `/github` uses about 10 GitHub requests and `/match` about 125, with
   a 30 second and 2 minute cooldown per person (`MATCH_COOLDOWN_SECONDS`).
   `PROFILE_MATCH_LIMIT` (default 5) sets how many issues a digest holds.
+
+**Dashboard access.** The web dashboard's API is locked whenever cloud storage
+is configured. There is no shared password: each person sends `/dashboard` to
+the Telegram bot and gets their own key (stored only as a hash; reissuing
+revokes the old one) plus a link that signs them in directly. The owner gets
+theirs the same way. `DAN_AGENT_API_KEY` still works as an optional master key
+for scripts and emergencies. Without cloud storage and without a master key —
+plain local development — everything stays open.
 
 One-time setup: the profile needs a **Profile** long text column on the
 Subscribers table. Create it with `npm run setup -- --subscribers` (the token

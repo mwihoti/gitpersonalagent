@@ -3,6 +3,7 @@ const config = require("./config");
 const {
   ProfileStorageError,
   getSubscriber,
+  issueDashboardKey,
   readSubscribers,
   setSubscriberProfile,
   upsertSubscriber,
@@ -262,6 +263,7 @@ async function setTelegramCommands(botToken) {
             },
             { command: "help", description: "Show available commands" },
             { command: "repos", description: "Browse the scanned repos and their issues" },
+            { command: "dashboard", description: "Get your personal key for the web dashboard" },
             {
               command: "projects",
               description: "Bitcoin projects by area: /projects lightning",
@@ -322,7 +324,7 @@ const BROWSE_HELP =
   "\n\nBrowse (no subscription needed):\n/repos - browse the scanned repos, pick one, sort its issues\n/projects - Bitcoin projects by area\n/areas - areas of the ecosystem\n/issues - what is open right now";
 
 const PERSONAL_HELP =
-  "\n\nMake it yours:\n/github <username> - learn my languages and experience from public GitHub\n/skills rust, lightning - tell me directly\n/level newcomer|intermediate|experienced\n/match - issues that fit me right now\n/me - what I know about you\n/forget - delete your profile";
+  "\n\nMake it yours:\n/github <username> - learn my languages and experience from public GitHub\n/skills rust, lightning - tell me directly\n/level newcomer|intermediate|experienced\n/match - issues that fit me right now\n/me - what I know about you\n/dashboard - personal key for the web dashboard\n/forget - delete your profile";
 
 function cleanText(value) {
   return String(value || "")
@@ -1215,6 +1217,34 @@ async function handlePersonalCommand(command, msg, { chatId, botId, token, reply
     return;
   }
 
+  if (command === "dashboard" || command === "workspace") {
+    try {
+      let token;
+      try {
+        token = await issueDashboardKey(chatId, botId);
+      } catch (error) {
+        if (!(error instanceof ProfileStorageError) || error.code !== "not_subscribed") throw error;
+        await subscribeTelegramChat(msg.chat, botId);
+        token = await issueDashboardKey(chatId, botId);
+      }
+      const base = String(process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+      const link = base ? `${base}/#key=${token}` : "";
+      await send([
+        "<b>Your dashboard key</b>",
+        `<code>${escapeHtml(token)}</code>`,
+        "",
+        link
+          ? `Open ${link} and you are in — the link signs you in by itself. Or open the dashboard, press <b>Workspace access</b>, and paste the key.`
+          : "Open the dashboard, press <b>Workspace access</b>, and paste the key.",
+        "",
+        "Keep it private: anyone with it can open the workspace. Send /dashboard again any time for a fresh key — the old one stops working.",
+      ].join("\n"));
+    } catch (error) {
+      await reply(storageProblem(error));
+    }
+    return;
+  }
+
   // /match
   if (!profileLib.hasProfile(profile)) {
     await reply("Tell me about you first: /github <username> or /skills rust, lightning. Then /match finds issues that fit.");
@@ -1375,7 +1405,7 @@ async function handleTelegramUpdate(update, onScan, bot, deps = {}) {
     } catch (e) {
       await reply(`Could not read the queue: ${e.message}`);
     }
-  } else if (["github", "skills", "level", "me", "forget", "match"].includes(command)) {
+  } else if (["github", "skills", "level", "me", "forget", "match", "dashboard", "workspace"].includes(command)) {
     await handlePersonalCommand(command, msg, { chatId, botId, token, reply, deps });
   } else if (command === "status") {
     await reply(

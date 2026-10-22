@@ -15,7 +15,7 @@ function parseRepo(input) {
 
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;
-  if (!requireApiAuth(req, res)) return;
+  if (!(await requireApiAuth(req, res))) return;
 
   if (req.method !== 'POST') {
     return sendJson(res, 405, { error: 'Method not allowed' });

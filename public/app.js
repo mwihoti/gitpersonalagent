@@ -4,6 +4,16 @@ const $ = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[character]));
 const safeUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; } catch { return ''; } };
 const createTag = (label, className = '') => `<span class="tag ${className}">${label}</span>`;
+// A dashboard link from the Telegram bot carries the key in the fragment
+// (…/#key=wk_…). Consume it before the router sees the hash: store it for the
+// session and scrub it from the address bar and history.
+(() => {
+  const match = location.hash.match(/[#&]key=(wk_[0-9a-f]{32})/);
+  if (!match) return;
+  sessionStorage.setItem('danagent.apiKey', match[1]);
+  history.replaceState(null, '', location.pathname + '#queue');
+})();
+
 const state = {
   items: [], repos: [], health: {}, learning: null, catalog: null, area: '', inspection: null,
   repoChoice: '', repoLimit: 12, inspectView: { query: '', hideClaimed: false, limit: 25 }, inspectBusy: false,
@@ -65,7 +75,7 @@ async function api(url, options = {}, retry = true) {
   }
   let data;
   try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Try again.'); }
-  if (response.status === 401) throw new Error('The dashboard key wasn’t accepted. Use Workspace access to try again.');
+  if (response.status === 401) throw new Error('That key wasn’t accepted. Send /dashboard to the Telegram bot for a fresh one.');
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
   return data;
 }

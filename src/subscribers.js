@@ -9,6 +9,7 @@
 //   profile           JSON: GitHub-derived skills and what the person set with
 //                     /skills — written only by setSubscriberProfile, so
 //                     re-subscribing never wipes it
+const crypto = require('crypto');
 const db = require('./db');
 
 function nodeFs() {
@@ -259,6 +260,66 @@ async function removeSubscriber(chatId, botId) {
   return localRemove(normalized, botId);
 }
 
+// ─── Personal dashboard keys ──────────────────────────────────────────────────
+// A subscriber asks the bot for a key (/dashboard); the key opens the web
+// dashboard. Only a SHA-256 hash is stored, so a leaked database never leaks
+// usable keys, and issuing a new key silently revokes the old one.
+
+function hashDashboardKey(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+async function issueDashboardKey(chatId, botId) {
+  const chat = normalizeChatId(chatId);
+  const token = `wk_${crypto.randomBytes(16).toString('hex')}`;
+  const hash = hashDashboardKey(token);
+
+  if (db.isConfigured()) {
+    try {
+      const existing = await dbFind(chat, botId);
+      if (!existing) throw new ProfileStorageError('not_subscribed', 'Subscribe first');
+      await db.query(
+        'UPDATE subscribers SET dashboard_key = $1 WHERE chat_id = $2 AND bot_id = $3',
+        [hash, existing.chatId, existing.botId],
+      );
+      return token;
+    } catch (error) {
+      if (error instanceof ProfileStorageError) throw error;
+      if (!db.isNetworkError(error)) throw error;
+      console.warn(`  Subscribers: database key write failed, using local store (${error.message})`);
+    }
+  }
+
+  return serializeLocalWrite(async () => {
+    const records = await localReadAll();
+    const index = records.findIndex((item) => sameSubscription(item, chat, botId));
+    if (index === -1) throw new ProfileStorageError('not_subscribed', 'Subscribe first');
+    records[index] = { ...records[index], dashboardKey: hash };
+    await localWriteAll(records);
+    return token;
+  });
+}
+
+// The subscriber a dashboard key belongs to, or null. Used by the API auth.
+async function findSubscriberByDashboardKey(token) {
+  const clean = String(token || '').trim();
+  if (!/^wk_[0-9a-f]{32}$/.test(clean)) return null;
+  const hash = hashDashboardKey(clean);
+
+  if (db.isConfigured()) {
+    try {
+      const rows = await db.query('SELECT * FROM subscribers WHERE dashboard_key = $1 LIMIT 1', [hash]);
+      return rows.length ? recordFromRow(rows[0]) : null;
+    } catch (error) {
+      if (!db.isNetworkError(error)) throw error;
+    }
+  }
+
+  const records = await localReadAll();
+  const match = records.find((item) => item.dashboardKey === hash);
+  return match ? { ...match, dashboardKey: undefined } : null;
+}
+
 // Saves (or, with null, clears) a subscriber's profile. The subscriber must
 // already exist; this never creates a row.
 async function setSubscriberProfile(chatId, botId, profile) {
@@ -294,6 +355,8 @@ async function setSubscriberProfile(chatId, botId, profile) {
 
 module.exports = {
   ProfileStorageError,
+  findSubscriberByDashboardKey,
+  issueDashboardKey,
   getSubscriber,
   setSubscriberProfile,
   readSubscribers,

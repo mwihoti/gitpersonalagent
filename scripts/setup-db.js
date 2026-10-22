@@ -20,13 +20,16 @@ const STATEMENTS = [
     open_questions text, analysis text, labels text, language text, last_updated text
   )`,
   `CREATE INDEX IF NOT EXISTS opportunities_issue_url ON opportunities (lower(issue_url))`,
+  // Personal dashboard keys came later; existing tables gain the column here.
+  `ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS dashboard_key text`,
   `CREATE TABLE IF NOT EXISTS subscribers (
     chat_id text NOT NULL,
     bot_id text NOT NULL DEFAULT '',
     type text, title text, username text, first_name text, last_name text,
-    subscribed_at text, last_seen_at text, profile text,
+    subscribed_at text, last_seen_at text, profile text, dashboard_key text,
     PRIMARY KEY (chat_id, bot_id)
   )`,
+  `CREATE INDEX IF NOT EXISTS subscribers_dashboard_key ON subscribers (dashboard_key)`,
 ];
 
 async function main() {
