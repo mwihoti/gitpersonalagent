@@ -9,7 +9,7 @@ const { allowOptions, sendJson } = require('../src/http');
 // latest comment, and whether it changed since the record was saved.
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;
-  if (!requireApiAuth(req, res)) return;
+  if (!(await requireApiAuth(req, res))) return;
 
   if (req.method !== 'GET') {
     return sendJson(res, 405, { error: 'Method not allowed' });

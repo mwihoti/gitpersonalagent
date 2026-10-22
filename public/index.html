@@ -137,7 +137,7 @@
   </div>
 
   <dialog id="access-dialog" class="dialog">
-    <form id="access-form"><h2>Workspace access</h2><p class="muted">Enter the dashboard key to open your saved issues.</p><label>Dashboard key<input id="access-key" type="password" autocomplete="current-password"></label><p id="access-error" class="error-text" role="alert"></p><div class="dialog-actions"><button class="button button-secondary" type="button" data-close-dialog>Cancel</button><button class="button" type="submit">Connect</button></div></form>
+    <form id="access-form"><h2>Workspace access</h2><p class="muted">Send <code>/dashboard</code> to the Telegram bot and it answers with your personal key — or a link that signs you in directly.</p><label>Dashboard key<input id="access-key" type="password" autocomplete="current-password"></label><p id="access-error" class="error-text" role="alert"></p><div class="dialog-actions"><button class="button button-secondary" type="button" data-close-dialog>Cancel</button><button class="button" type="submit">Connect</button></div></form>
   </dialog>
   <dialog id="dismiss-dialog" class="dialog">
     <form id="dismiss-form"><h2>Dismiss this issue</h2><p class="muted">A reason helps improve future suggestions.</p><label>Reason<select id="dismiss-reason"><option value="too big">Too big</option><option value="not my stack">Not my stack</option><option value="already taken">Already taken</option><option value="not interesting">Not interesting</option></select></label><div class="dialog-actions"><button class="button button-secondary" type="button" data-close-dialog>Cancel</button><button class="button" type="submit">Dismiss issue</button></div></form>

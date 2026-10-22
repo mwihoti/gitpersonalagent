@@ -28,7 +28,7 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 401, { error: 'Unauthorized' });
   }
 
-  if (allowManual && !requireApiAuth(req, res)) {
+  if (allowManual && !(await requireApiAuth(req, res))) {
     return;
   }
 

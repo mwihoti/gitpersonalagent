@@ -3,12 +3,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 
-const ENV = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_2', 'TELEGRAM_WEBHOOK_SECRET', 'PUBLIC_BASE_URL', 'DAN_AGENT_API_KEY', 'VERCEL_ENV', 'TELEGRAM_BOTS'];
+const ENV = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_2', 'TELEGRAM_WEBHOOK_SECRET', 'PUBLIC_BASE_URL', 'DAN_AGENT_API_KEY', 'VERCEL_ENV', 'TELEGRAM_BOTS', 'DATABASE_URL'];
 
 function load(t, env, telegram) {
   const saved = Object.fromEntries(ENV.map(key => [key, process.env[key]]));
   for (const key of ENV) delete process.env[key];
-  Object.assign(process.env, env);
+  Object.assign(process.env, { DATABASE_URL: '' }, env);
   for (const mod of ['config', 'bots', 'webhook-setup', 'auth', 'whatsapp']) {
     delete require.cache[path.resolve(__dirname, '..', 'src', `${mod}.js`)];
   }

@@ -5,7 +5,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-const ENV_KEYS = ['DAN_AGENT_DATA_DIR', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_2', 'TELEGRAM_CHAT_ID', 'AIRTABLE_API_KEY', 'AIRTABLE_BASE_ID', 'SCAN_ONLY_CHAT', 'SCAN_REPLY_BOT', 'PROFILE_MATCH_LIMIT', 'MATCH_COOLDOWN_SECONDS'];
+const ENV_KEYS = ['DAN_AGENT_DATA_DIR', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN_2', 'TELEGRAM_CHAT_ID', 'AIRTABLE_API_KEY', 'AIRTABLE_BASE_ID', 'SCAN_ONLY_CHAT', 'SCAN_REPLY_BOT', 'PROFILE_MATCH_LIMIT', 'MATCH_COOLDOWN_SECONDS', 'PUBLIC_BASE_URL'];
 
 // A fresh copy of the bot modules, a temp data dir, and a recording Telegram.
 async function world(t, env = {}, dbStub = null) {
@@ -334,4 +334,20 @@ test('/repos browsing: list for anyone, sorts edit in place, owner gate untouche
   // The owner-only buttons are still gated for that same stranger.
   await wa.handleTelegramUpdate({ callback_query: { id: 'cb10', data: 'claim:rec1', from: { username: 'stranger' }, message: { message_id: 43, chat: { id: 900 } } } }, async () => {}, bot, { browseDeps });
   assert.match(sent.filter(m => m.method === 'answerCallbackQuery').at(-1).body.text, /owner's queue/);
+});
+
+test('/dashboard hands out a personal key with a sign-in link, and a fresh one each time', async t => {
+  const { subs, texts, say } = await world(t, { PUBLIC_BASE_URL: 'https://btc-opensource-projects.vercel.app' });
+
+  await say(950, '/dashboard');
+  const first = texts(950).at(-1);
+  const token = first.match(/<code>(wk_[0-9a-f]{32})<\/code>/)[1];
+  assert.match(first, /https:\/\/btc-opensource-projects\.vercel\.app\/#key=wk_/);
+  assert.match(first, /Keep it private/);
+  assert.equal((await subs.findSubscriberByDashboardKey(token)).chatId, '950', 'works even though they never sent /start');
+
+  await say(950, '/dashboard');
+  const second = texts(950).at(-1).match(/<code>(wk_[0-9a-f]{32})<\/code>/)[1];
+  assert.notEqual(second, token);
+  assert.equal(await subs.findSubscriberByDashboardKey(token), null, 'the old key died');
 });
