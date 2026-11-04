@@ -158,7 +158,7 @@ A `/dashboard` link from the bot carries `#key=` in the fragment; `public/app.js
 
 ## 8. Operations
 
-- **Deploy**: `npx vercel --prod` after merging to `main`. Git integration is not wired to auto-deploy. Production domain `btc-opensource-projects.vercel.app`; the old `danpersonalagent.vercel.app` is an alias.
+- **Deploy**: `npx vercel --prod` after merging to `main`. Git integration is not wired to auto-deploy. Production domain `www.btcopensource.space` (the apex redirects to it); `btc-opensource-projects.vercel.app` and `danpersonalagent.vercel.app` remain as aliases so old links keep working.
 - **Schedules**: `scan.yml` daily 05:00 UTC; `weekly-digest.yml` Mondays 06:00 UTC; `telegram-scan.yml` on dispatch. All in the `danpersonaagent` Actions environment.
 - **Secrets**: `GITHUB_TOKEN` (fine-grained, public repos, Issues: read-only), `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, provider keys (`GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`), optional `DAN_AGENT_API_KEY`.
 - **Tests**: `npm test` (`node --test`, 206 tests). Tests stub modules via `require.cache` and pin `DATABASE_URL=''` so a developer's real `.env` cannot leak in; `db.js` reads the env at call time for the same reason.

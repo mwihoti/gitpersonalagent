@@ -13,7 +13,7 @@ The gap was never "can I write the code". The gap was *finding the right issue t
 It is called **Bitcoin Contributor Intelligence**, which is a grander name than it deserves. In practice it is three things:
 
 - a Telegram bot, [@btc_opensource_projects_bot](https://t.me/btc_opensource_projects_bot), that sends a short daily digest of open issues worth a look;
-- a small dashboard at [btc-opensource-projects.vercel.app](https://btc-opensource-projects.vercel.app) that holds the running queue;
+- a small dashboard at [www.btcopensource.space](https://www.btcopensource.space) that holds the running queue;
 - a scan that runs every morning at 8am Nairobi time, reads the issues the way I used to, and does the forty minutes for me.
 
 Every morning the bot gives me a handful of issues across the Bitcoin ecosystem. For each one it tells me what the maintainer actually wants (read from the thread, not the title), whether anyone has claimed it, which files are involved, what a first step would be, and what might go wrong. Then it gets out of the way.
