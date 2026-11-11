@@ -141,6 +141,305 @@ function list(value, max = 8, mapper = item => str(item, 400)) {
   return value.map(mapper).filter(item => (typeof item === 'string' ? item : Object.values(item).some(Boolean))).slice(0, max);
 }
 
+// ─── Evidence: tie each quote back to the comment it came from ─────────────────
+// The model quotes the thread; we find the quote in the real thread so the
+// digest can link the exact comment and show its real date and author. A
+// quote we cannot find stays in the analysis but is marked unverified, and
+// the digest leaves it out rather than show a line nobody actually wrote.
+
+const MAINTAINER_ROLES = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+// Marks that never count as words: REMOVED stands where struck or unclosed
+// text was dropped (a paragraph containing it is never shown), HEADING
+// starts a heading line.
+const REMOVED = '⁠⁠';
+const HEADING = '⁣';
+
+// Fenced code blocks, found line by line (a regex over the whole body
+// backtracks badly on long runs of backticks). Each block becomes one
+// placeholder, with blank lines around it so it is its own paragraph.
+function maskFences(text, keep) {
+  const out = [];
+  let fence = '';
+  let body = [];
+  for (const line of text.split('\n')) {
+    if (fence) {
+      const trimmed = line.trim();
+      if (trimmed.length >= fence.length && /^(?:`+|~+)$/.test(trimmed) && trimmed[0] === fence[0]) {
+        out.push(keep(body.join('\n')), '');
+        fence = '';
+        body = [];
+      } else {
+        body.push(line);
+      }
+      continue;
+    }
+    const open = line.match(/^[ \t]*(`{3,}|~{3,})/);
+    if (open) { fence = open[1]; out.push(''); continue; }
+    out.push(line);
+  }
+  if (fence) out.push(keep(body.join('\n')));
+  return out.join('\n');
+}
+
+// What a reader sees once the Markdown renders, so a quote of the visible text
+// matches. For thread sources (quotes: 'drop'), anything quoted from someone
+// else or struck out is removed. Code (fenced blocks and inline spans) is set
+// aside first and restored untouched, so `~~x`, `~/.config` or a "> " shell
+// prompt inside code never trigger any of that.
+function visibleText(markdown, options = {}) {
+  const dropQuotes = options.quotes === 'drop';
+  const code = [];
+  const keep = (match) => `⁢${code.push(match) - 1}⁢`;
+  let text = maskFences(String(markdown || ''), keep)
+    .replace(/`[^`\n]+`/g, keep)
+    // Hidden when rendered; an unclosed one hides everything after it.
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, (match) => (match.endsWith('-->') ? ' ' : REMOVED));
+
+  if (dropQuotes) {
+    // An opener with no closer (written that way, or cut by the length cap)
+    // drops everything after it.
+    text = text
+      // A reply without the words it answers ("> Any reason not to?" / "No.")
+      // can mean the opposite: mark it, so the comment is never shown.
+      .replace(/<blockquote\b[^>]*>[\s\S]*?(?:<\/blockquote>|$)/gi, REMOVED)
+      .replace(/<(del|s|strike)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi, REMOVED)
+      // Superscript and subscript carry meaning (10<sup>-6</sup>) that plain
+      // text cannot show: such a comment is never quoted.
+      .replace(/<(sup|sub)\b[^>]*>/gi, REMOVED)
+      .replace(/~~(?:(?!\n[ \t]*\n)[\s\S])*?(?:~~|(?=\n[ \t]*\n)|$)/g, REMOVED)
+      .replace(/(?<![~\p{L}\p{N}])~(?=[^\s~])(?:(?!\n[ \t]*\n)[^~])*?[^\s~]~(?![~\p{L}\p{N}])/gu, REMOVED);
+  }
+
+  const lines = [];
+  let inQuote = false;
+  let prev = '';
+  let prevWasItem = false;
+  for (const line of text.split('\n')) {
+    if (dropQuotes) {
+      if (/^\s*(?:(?:[-*+]|\d+[.)])[ \t]+)?>/.test(line)) { inQuote = true; lines.push(REMOVED); prev = ''; prevWasItem = false; continue; }
+      if (inQuote && line.trim()) { lines.push(REMOVED); continue; }
+      inQuote = false;
+      // An unchecked template box ("- [ ] I am willing to submit a PR") is
+      // something the author did NOT say.
+      if (/^[ \t]*(?:\d+[.)]|[-*+])[ \t]+\[ \][ \t]/.test(line)) { lines.push(''); prev = ''; prevWasItem = false; continue; }
+    }
+    const heading = line.match(/^[ \t]*#{1,6}[ \t]+(.*?)[ \t#]*$/);
+    if (heading) {
+      lines.push(`${HEADING}${/[.:!?]$/.test(heading[1]) ? heading[1] : `${heading[1]}:`}`);
+      prev = line; prevWasItem = false;
+      continue;
+    }
+    // Bullets become "•" (not a word, so matching ignores it). A numbered
+    // line is a list item only where CommonMark says so: after a blank line
+    // or another item, or when it is "1." — otherwise "10. Anything more" in
+    // a wrapped paragraph keeps its number.
+    const bullet = /^[ \t]*[-*+][ \t]+/.test(line);
+    const number = line.match(/^[ \t]*(\d+)[.)][ \t]+/);
+    const numbered = number && (!prev.trim() || prevWasItem || number[1] === '1');
+    const isItem = Boolean(bullet || numbered);
+    lines.push(isItem ? line.replace(/^[ \t]*(?:\d+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?/, '• ') : line);
+    prev = line;
+    prevWasItem = isItem;
+  }
+
+  return lines.join('\n')
+    // Link text cannot contain "[" and a URL has no spaces or "(": each
+    // attempt stops at the next bracket, so "[[[[…" stays linear.
+    .replace(/!?\[([^[\]\n]*)\]\([^()\s]*\)/g, '$1')
+    // Real HTML only: Vec<u8> or Option<T> in prose must survive.
+    .replace(/<\/?(?:a|b|i|em|strong|code|pre|kbd|sub|sup|br|hr|p|div|span|img|details|summary|ul|ol|li|table|thead|tbody|tr|td|th|blockquote|del|s|ins|h[1-6])\b[^<>]*>/gi, ' ')
+    // One pass, so "&amp;lt;" becomes the literal text "&lt;", as GitHub shows it.
+    .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (all, name) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' })[name])
+    .replace(/⁢(\d+)⁢/g, (all, index) => code[Number(index)]);
+}
+
+// Word tokens with their position in the visible text, so a match can be
+// shown in the commenter's own words.
+function tokenize(text) {
+  return Array.from(String(text || '').matchAll(/[\p{L}\p{N}\p{M}]+/gu), match => ({
+    word: match[0].toLowerCase(),
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+}
+
+// Models trim with ellipses ("a ... b", "a [...] b", "a (…) b"). Each piece
+// must appear, in order, in one comment.
+function quoteParts(quote) {
+  return visibleText(quote)
+    .split(/\s*(?:[[(]\s*(?:\.\.\.|…)\s*[\])]|\.\.\.|…)\s*/)
+    .map(part => tokenize(part).map(token => token.word))
+    .filter(part => part.length);
+}
+
+function cleanQuote(quote) {
+  return String(quote || '').trim().replace(/^["'“”‘’\s]+|["'“”‘’\s]+$/g, '');
+}
+
+function cleanLogin(value) {
+  return String(value || '').trim().replace(/^@/, '').replace(/\s*\([^)]*\)\s*$/, '').toLowerCase();
+}
+
+function threadSources(context) {
+  const issue = (context && context.issue) || {};
+  const sources = [];
+  if (issue.body) {
+    sources.push({ author: issue.author || '', createdAt: issue.createdAt || '', url: issue.url || '', body: issue.body, association: issue.authorAssociation || '', truncated: Boolean(issue.bodyTruncated) });
+  }
+  for (const comment of (context && context.comments) || []) {
+    sources.push({ author: comment.author || '', createdAt: comment.createdAt || '', url: comment.url || '', body: comment.body || '', association: comment.authorAssociation || '', truncated: Boolean(comment.truncated) });
+  }
+  return sources;
+}
+
+// Finds the parts in order in a source's tokens. The last word of each part
+// may be a prefix, because quotes get clipped mid-word. Returns the token
+// ranges matched, or null.
+function findParts(tokens, parts) {
+  const ranges = [];
+  let from = 0;
+  for (const part of parts) {
+    let found = -1;
+    for (let i = from; i + part.length <= tokens.length && found < 0; i += 1) {
+      let ok = true;
+      for (let j = 0; j < part.length && ok; j += 1) {
+        const word = tokens[i + j].word;
+        ok = j === part.length - 1 && part[j].length >= 3 ? word.startsWith(part[j]) : word === part[j];
+      }
+      if (ok) found = i;
+    }
+    if (found < 0) return null;
+    ranges.push([found, found + part.length - 1]);
+    from = found + part.length;
+  }
+  return ranges;
+}
+
+// A short quote ("LGTM", "go ahead") counts only as the whole comment: as a
+// fragment it would match half the thread.
+const SHORT_QUOTE = 12;
+const SPAN_LIMIT = 300;
+
+// Paired emphasis only, and never inside `code`: "2**20" and `__init__`
+// must reach the reader exactly as written.
+function stripEmphasis(text) {
+  // Multi-backtick code spans are not parsed here: leave everything as is.
+  if (text.includes('``')) return text;
+  return text.split(/(`[^`\n]*`)/).map((piece, index) => (index % 2
+    ? piece
+    // Not glued to a letter or digit outside, so 2**20 and a**b stay as written.
+    : piece.replace(/(?<![\p{L}\p{N}*_])(\*\*|__)(?=\S)([^\n]*?\S)\1(?![\p{L}\p{N}*_])/gu, '$2'))).join('');
+}
+
+// An edit or retraction anywhere in a comment may withdraw any part of it.
+// Broad on purpose: a false alarm only hides a quote. Keywords count when
+// followed by ":", ")", "]" or a dash ("Quick update:", "EDIT2:", "(edit:"),
+// phrases count anywhere.
+const EDIT_MARKER = /\b(?:edit(?:ed)?|update[ds]?|upd|eta|p\.?s|addendum|correction)\s*\d*\s*(?:\([^)\n]{0,20}\)\s*)?(?:[:\])—-]|\*{1,3}\s*:)|\b(?:edited to add|never ?mind|nvm|disregard (?:that|this|the above|my)|on second thought|scratch that|changed my mind|retract(?:ed|ing)?)\b/i;
+
+// The whole comment, exactly as written, or '' when it cannot be shown
+// safely. Showing the entire comment means nothing around the quote can be
+// lost: a lead-in, a "not", an "Edit: never mind" are all on screen. So it
+// must be one paragraph and short, not cut by the length cap, and nothing
+// struck through may have been removed from it.
+function sourceSpan(source) {
+  if (source.truncated || EDIT_MARKER.test(source.body)) return '';
+  const visible = source.visible.trim();
+  if (!visible || visible.includes(REMOVED) || /\n[ \t]*\n/.test(visible)) return '';
+  const shown = stripEmphasis(visible.split(HEADING).join('')).replace(/\s+/g, ' ').trim();
+  return shown.length <= SPAN_LIMIT ? shown : '';
+}
+
+// True when any matched piece sits inside quotation marks on its line: the
+// commenter is repeating someone ('Re "we should drop it": no'), not saying
+// it. Straight single quotes count only at word edges, so "don't" is not one.
+function openQuote(before) {
+  const straight = (before.match(/"/g) || []).length % 2 === 1;
+  const curly = (before.match(/\u201c/g) || []).length > (before.match(/\u201d/g) || []).length;
+  const curlySingle = (before.match(/\u2018/g) || []).length > (before.match(/\u2019(?![\p{L}])/gu) || []).length;
+  const singleOpen = (before.match(/(?:^|[\s(\[])'(?=\S)/g) || []).length;
+  const singleClose = (before.match(/(?<=\S)'(?=$|[\s,.;:!?)\]])/g) || []).length;
+  return straight || curly || curlySingle || singleOpen > singleClose;
+}
+
+function insideQuotes(source, ranges) {
+  return ranges.some(([first]) => {
+    const start = source.tokens[first].start;
+    const lineStart = source.visible.lastIndexOf('\n', start - 1) + 1;
+    // One character past the start, so an opening ' can see the word it opens.
+    return openQuote(source.visible.slice(lineStart, start + 1));
+  });
+}
+
+function isMaintainer(source) {
+  return MAINTAINER_ROLES.has(String(source.association).toUpperCase());
+}
+
+function resolveEvidence(items, context) {
+  // A thread we did not read in full may hold the comment that withdraws a
+  // quote, so none is trusted.
+  if (context && context.commentsComplete === false) {
+    return items.map(raw => ({ ...raw, quote: cleanQuote(raw.quote), verified: false, url: '', role: '' }));
+  }
+  const issueAuthor = cleanLogin(((context && context.issue) || {}).author);
+  const sources = threadSources(context)
+    .map((source, order) => {
+      const visible = visibleText(source.body, { quotes: 'drop' });
+      return { ...source, order, visible, tokens: tokenize(visible) };
+    });
+
+  return items.map(raw => {
+    const item = { ...raw, quote: cleanQuote(raw.quote) };
+    const parts = quoteParts(item.quote);
+    const total = parts.flat().join(' ');
+    const found = [];
+    if (total) {
+      for (const source of sources) {
+        if (total.length < SHORT_QUOTE) {
+          const ranges = [[0, source.tokens.length - 1]];
+          if (source.tokens.map(token => token.word).join(' ') === total && sourceSpan(source)) found.push({ source, ranges });
+          continue;
+        }
+        const ranges = findParts(source.tokens, parts);
+        if (ranges && !insideQuotes(source, ranges) && sourceSpan(source)) found.push({ source, ranges });
+      }
+    }
+
+    // Credit the named author when they said it; otherwise the named date;
+    // otherwise whoever said it first, which is the original rather than
+    // someone repeating it.
+    const who = cleanLogin(item.who);
+    const byAuthor = found.filter(match => cleanLogin(match.source.author) === who);
+    let pool = byAuthor.length ? byAuthor : found;
+    const onDate = pool.filter(match => item.when && match.source.createdAt.startsWith(item.when));
+    if (onDate.length) pool = onDate;
+    const match = pool.sort((a, b) => String(a.source.createdAt).localeCompare(String(b.source.createdAt)) || a.source.order - b.source.order)[0];
+    if (!match) return { ...item, verified: false, url: '', role: '' };
+
+    const { source } = match;
+    // Only someone's latest word in the thread is shown: any later comment by
+    // the same person may change their position, and reading it reliably is
+    // not possible.
+    const revisited = sources.some(other => other.order > source.order
+      && cleanLogin(other.author) === cleanLogin(source.author));
+    // The reporter can edit the issue text at any time, so it may be newer
+    // than any comment of theirs: their comments are never quoted.
+    const reporterComment = source.order > 0 && issueAuthor && cleanLogin(source.author) === issueAuthor && Boolean(((context && context.issue) || {}).body);
+    if (revisited || reporterComment) return { ...item, verified: false, url: '', role: '' };
+    return {
+      ...item,
+      // Shown in the commenter's own words, never the model's paraphrase.
+      quote: sourceSpan(source),
+      who: source.author || item.who,
+      when: source.createdAt ? source.createdAt.slice(0, 10) : item.when,
+      url: source.url,
+      role: isMaintainer(source) ? 'maintainer' : (source.author && cleanLogin(source.author) === issueAuthor ? 'issue author' : ''),
+      verified: true,
+    };
+  });
+}
+
 function normalizeAnalysis(raw, context) {
   const state = str(raw.current_state, 40).toLowerCase().replace(/[\s-]+/g, '_');
   const knownPaths = new Set(context.files.map(file => file.path));
@@ -150,11 +449,11 @@ function normalizeAnalysis(raw, context) {
   return {
     summary: str(raw.summary, 1200),
     maintainerWants: str(raw.maintainer_wants, 1500),
-    evidence: list(raw.evidence, 5, item => ({
+    evidence: resolveEvidence(list(raw.evidence, 5, item => ({
       who: str(item && item.who, 60),
       when: str(item && item.when, 12),
-      quote: str(item && item.quote, 300),
-    })),
+      quote: str(item && item.quote, 600),
+    })), context),
     currentState: STATES.has(state) ? state : 'available',
     stateReason: str(raw.state_reason, 400),
     openQuestions: list(raw.open_questions, 6),
@@ -365,6 +664,8 @@ module.exports = {
   analyzeIssue,
   buildPrompt,
   normalizeAnalysis,
+  resolveEvidence,
+  SPAN_LIMIT,
   heuristicAnalysis,
   SYSTEM_PROMPT,
 };

@@ -138,7 +138,8 @@ function formatAge(value, now = Date.now()) {
   if (days < 30) return `${days}d ago`;
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo ago`;
-  const years = Math.floor(days / 365);
+  // 360-364 days is under a year by days but past twelve 30-day months.
+  const years = Math.max(1, Math.floor(days / 365));
   return `${years}y ago`;
 }
 

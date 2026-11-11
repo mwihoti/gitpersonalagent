@@ -680,7 +680,7 @@ function analysisHtml(result) {
 
   const evidence = (a.evidence || []).length
     ? block('Evidence from the thread', a.evidence.map(item => `
-        <blockquote class="analysis-quote">${escapeHtml(item.quote)}<cite>${escapeHtml(item.who)}${item.when ? ` · ${escapeHtml(item.when)}` : ''}</cite></blockquote>
+        <blockquote class="analysis-quote">${escapeHtml(item.quote)}<cite>${item.url ? `<a href="${escapeHtml(safeUrl(item.url))}" target="_blank" rel="noreferrer">${escapeHtml(item.who)}</a>` : escapeHtml(item.who)}${item.role ? ` (${escapeHtml(item.role)})` : ''}${item.when ? ` · ${escapeHtml(item.when)}` : ''}${item.verified === false ? ' · not found in the thread' : ''}</cite></blockquote>
       `).join(''))
     : '';
 
