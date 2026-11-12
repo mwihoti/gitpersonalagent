@@ -121,7 +121,7 @@ function renderHeader() {
   $('page-title').classList.remove('hidden');
   $('page-subtitle').classList.remove('hidden');
   $('page-title').textContent = state.view === 'repos' ? 'Repos' : state.view === 'scans' ? 'Scans' : 'Queue';
-  document.title = `${state.view === 'issue' ? state.draft?.opportunity || 'Issue' : $('page-title').textContent} · dan/queue`;
+  document.title = `${state.view === 'issue' ? state.draft?.opportunity || 'Issue' : $('page-title').textContent} · BTC Open Source`;
   if (state.view === 'issue' && state.draft) {
     $('page-title').classList.add('hidden');
     $('page-subtitle').innerHTML = `<span class="breadcrumb"><a id="back-to-queue" class="back-link" href="#queue"><span aria-hidden="true">←</span> Back to queue</a><span>${escapeHtml(ref(state.draft))}</span></span>`;

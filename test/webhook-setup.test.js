@@ -118,3 +118,21 @@ test('a Telegram failure for one bot is reported without hiding the other', asyn
   assert.deepEqual(result.bots.map(b => [b.botId, b.ok, b.error]), [['111', true, ''], ['222', false, 'Unauthorized']]);
   await assert.rejects(() => setup.registerWebhooks({ baseUrl: '' }), /deployment URL is required/);
 });
+
+test('a personal dashboard key cannot manage webhooks', async t => {
+  const { calls } = load(t, { ...twoBots, PUBLIC_BASE_URL: 'https://app.example.com', DAN_AGENT_API_KEY: 'owner' }, () => ({ ok: true, result: true }));
+  const authPath = path.resolve(__dirname, '..', 'src', 'auth.js');
+  const handlerPath = path.resolve(__dirname, '..', 'api', 'setup-webhook.js');
+  const auth = require(authPath);
+  require.cache[authPath].exports = { ...auth, requireApiAuth: async () => ({ role: 'subscriber', chatId: '42' }) };
+  delete require.cache[handlerPath];
+  t.after(() => { delete require.cache[authPath]; delete require.cache[handlerPath]; });
+  const handler = require(handlerPath);
+
+  for (const method of ['GET', 'POST']) {
+    const res = respond();
+    await handler({ method, headers: { host: 'app.example.com' }, url: '/api/setup-webhook' }, res);
+    assert.equal(res.statusCode, 403, method);
+  }
+  assert.equal(calls.length, 0, 'no Telegram call was made');
+});

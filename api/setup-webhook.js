@@ -6,7 +6,7 @@
 //
 // Useful when the bot tokens and webhook secret are stored as sensitive
 // variables that cannot be copied to another machine: nothing leaves the host.
-// Protected by DAN_AGENT_API_KEY like the rest of the dashboard API.
+// Owner only (DAN_AGENT_API_KEY): personal dashboard keys cannot touch the bots.
 const { registerWebhooks, webhookInfo } = require('../src/webhook-setup');
 const { setTelegramCommands } = require('../src/whatsapp');
 const { requireApiAuth } = require('../src/auth');
@@ -24,7 +24,9 @@ function resolveBaseUrl(req) {
 
 module.exports = async function handler(req, res) {
   if (allowOptions(req, res)) return;
-  if (!(await requireApiAuth(req, res))) return;
+  const access = await requireApiAuth(req, res);
+  if (!access) return;
+  if (access.role !== 'owner') return sendJson(res, 403, { error: 'Only the owner key can manage webhooks.' });
 
   const baseUrl = resolveBaseUrl(req);
 
