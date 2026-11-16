@@ -73,7 +73,7 @@ async function api(url, options = {}, retry = true) {
   if (response.status === 401 && retry) {
     // Only re-prompt someone whose key was rejected. A first-time visitor gets
     // the locked welcome instead of a modal shoved over an unread page.
-    if (!state.key) { const locked = new Error('locked'); locked.locked = true; throw locked; }
+    if (!state.key) { state.locked = true; const locked = new Error('This workspace is locked. Send /dashboard to the Telegram bot for a key, then choose “I have a key”.'); locked.locked = true; throw locked; }
     if (await requestKey()) return api(url, options, false);
   }
   let data;
@@ -118,6 +118,7 @@ function repositoryChoices() { return Q.repositoryChoices(state.items, state.rep
 function renderHeader() {
   const run = state.health.recentRuns?.[0];
   const scans = `<span class="muted">${run ? `Last scan ${escapeHtml(shortDate(run.startedAt, true).toLowerCase())}` : 'No scans yet'}</span><button type="button" class="button" data-scan ${state.running ? 'disabled' : ''}>${state.running ? 'Scanning…' : 'Scan now'}</button>`;
+  const unlockAction = '<button type="button" class="button" data-enter-key>I have a key</button>';
   $('page-title').classList.remove('hidden');
   $('page-subtitle').classList.remove('hidden');
   $('page-title').textContent = state.view === 'repos' ? 'Repos' : state.view === 'scans' ? 'Scans' : 'Queue';
@@ -132,12 +133,12 @@ function renderHeader() {
     $('page-actions').innerHTML = '<button class="button button-secondary" type="button" data-schedule>View schedule</button>';
   } else if (state.view === 'scans') {
     $('page-subtitle').textContent = state.health.currentRun ? 'A scan is running' : scheduleText();
-    $('page-actions').innerHTML = scans;
+    $('page-actions').innerHTML = state.locked ? unlockAction : scans;
   } else {
     const latest = state.items.map(item => item.date).filter(Boolean).sort().at(-1);
     const n = state.items.filter(item => Q.displayStatus(item) === 'New' && item.date === latest).length;
-    $('page-subtitle').textContent = state.loaded ? n ? `${n} new in the latest scan` : 'Your open issues and work in progress' : 'Loading issues…';
-    $('page-actions').innerHTML = scans;
+    $('page-subtitle').textContent = state.locked ? 'Locked — get a key from the Telegram bot' : state.loaded ? n ? `${n} new in the latest scan` : 'Your open issues and work in progress' : 'Loading issues…';
+    $('page-actions').innerHTML = state.locked ? unlockAction : scans;
   }
 }
 function scheduleText() {
@@ -158,8 +159,10 @@ function renderQueue() {
   $('repo-filter').value = state.filters.repo;
   const filtered = Q.filterIssues(state.items, state.filters);
   const visible = filtered.slice(0, state.limit);
-  $('queue-body').setAttribute('aria-busy', !state.loaded);
-  if (!state.loaded) {
+  $('queue-body').setAttribute('aria-busy', !state.loaded && !state.locked);
+  if (!state.loaded && state.locked) {
+    $('queue-body').innerHTML = lockedWelcome();
+  } else if (!state.loaded) {
     $('queue-body').innerHTML = '<div class="empty-state">Loading your issues…</div>';
   } else if (!filtered.length) {
     const empty = !state.items.length;
@@ -497,6 +500,7 @@ function renderRanking() {
 }
 async function scan() {
   if (state.running) return;
+  if (state.locked) { if (await requestKey()) init(); return; }
   state.running = true; renderHeader();
   showNotice('Scan started. You can keep browsing while it runs.');
   try {
@@ -550,14 +554,18 @@ function navigate(hash, force = false) {
   showRoute(hash,force);
 }
 // What a visitor without a key sees: an invitation, not an interrogation.
+function lockedWelcome() {
+  const bot = /^[A-Za-z0-9_]{3,64}$/.test(state.health.config?.botUsername || '') ? state.health.config.botUsername : '';
+  return `<div class="empty-state"><strong>This workspace is private</strong><p>Get your own daily Bitcoin issues instead: open the Telegram bot, send <code>/start</code>, and it picks open issues that fit your skills. <code>/dashboard</code> there gives you a key for this page.</p><div class="dialog-actions" style="justify-content:flex-start">${bot ? `<a class="button" href="https://t.me/${escapeHtml(bot)}" target="_blank" rel="noreferrer">Open the bot</a>` : ''}<button class="button button-secondary" type="button" data-enter-key>I have a key</button></div></div>`;
+}
 function renderLockedWelcome() {
-  const bot = state.health.config?.botUsername;
   $('queue-body').setAttribute('aria-busy','false');
-  $('queue-body').innerHTML = `<div class="empty-state"><strong>This workspace is private</strong><p>Get your own daily Bitcoin issues instead: open the Telegram bot, send <code>/start</code>, and it picks open issues that fit your skills. <code>/dashboard</code> there gives you a key for this page.</p><div class="dialog-actions" style="justify-content:flex-start">${bot ? `<a class="button" href="https://t.me/${escapeHtml(bot)}" target="_blank" rel="noreferrer">Open the bot</a>` : ''}<button class="button button-secondary" type="button" data-enter-key>I have a key</button></div></div>`;
-  $('page-subtitle').textContent = 'Locked — get a key from the Telegram bot';
+  $('queue-body').innerHTML = lockedWelcome();
+  renderHeader();
 }
 
 async function init() {
+  state.locked = false;
   const results = await Promise.allSettled([loadItems(),loadRepos(),loadHealth()]);
   const error = results.find(result=>result.status==='rejected');
   if (error && error.reason && error.reason.locked) {
