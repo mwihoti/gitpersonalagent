@@ -30,6 +30,14 @@ const STATEMENTS = [
     PRIMARY KEY (chat_id, bot_id)
   )`,
   `CREATE INDEX IF NOT EXISTS subscribers_dashboard_key ON subscribers (dashboard_key)`,
+  // Free scans for visitors without a key (see src/trial.js). Created on first
+  // use too, so a deployment that never ran setup still works.
+  `CREATE TABLE IF NOT EXISTS trial_scans (
+    visitor text PRIMARY KEY,
+    used integer NOT NULL DEFAULT 0,
+    first_at timestamptz NOT NULL DEFAULT now(),
+    last_at timestamptz NOT NULL DEFAULT now()
+  )`,
 ];
 
 async function main() {

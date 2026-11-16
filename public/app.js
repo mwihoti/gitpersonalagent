@@ -20,7 +20,7 @@ const state = {
   filters: { status: 'Open', repo: '', priority: '', search: '', sort: 'fit' }, limit: 20,
   view: 'queue', selected: null, draft: null, dirty: false, saving: false, running: false,
   loaded: false, queueScroll: 0, route: '', pendingRoute: null, undo: null,
-  key: sessionStorage.getItem('danagent.apiKey') || '', accessPromise: null, accessResolve: null,
+  key: sessionStorage.getItem('danagent.apiKey') || '', trial: null, accessPromise: null, accessResolve: null,
 };
 const statuses = ['Open', 'New', 'In Progress', 'Done', 'Dismissed', 'Closed'];
 
@@ -73,7 +73,14 @@ async function api(url, options = {}, retry = true) {
   if (response.status === 401 && retry) {
     // Only re-prompt someone whose key was rejected. A first-time visitor gets
     // the locked welcome instead of a modal shoved over an unread page.
-    if (!state.key) { state.locked = true; const locked = new Error('This workspace is locked. Send /dashboard to the Telegram bot for a key, then choose “I have a key”.'); locked.locked = true; throw locked; }
+    if (!state.key) {
+      const body = await response.json().catch(() => ({}));
+      state.locked = true;
+      if (body.trial) state.trial = body.trial;
+      const locked = new Error(body.error || 'This workspace is locked. Send /dashboard to the Telegram bot for a key, then choose “I have a key”.');
+      locked.locked = true;
+      throw locked;
+    }
     if (await requestKey()) return api(url, options, false);
   }
   let data;
@@ -118,7 +125,10 @@ function repositoryChoices() { return Q.repositoryChoices(state.items, state.rep
 function renderHeader() {
   const run = state.health.recentRuns?.[0];
   const scans = `<span class="muted">${run ? `Last scan ${escapeHtml(shortDate(run.startedAt, true).toLowerCase())}` : 'No scans yet'}</span><button type="button" class="button" data-scan ${state.running ? 'disabled' : ''}>${state.running ? 'Scanning…' : 'Scan now'}</button>`;
-  const unlockAction = '<button type="button" class="button" data-enter-key>I have a key</button>';
+  const left = state.trial?.remaining || 0;
+  const unlockAction = left
+    ? `<span class="muted">${left} free scan${left === 1 ? '' : 's'} left</span><a class="button" href="#repos">Try a free scan</a><button type="button" class="button button-secondary" data-enter-key>I have a key</button>`
+    : '<button type="button" class="button" data-enter-key>I have a key</button>';
   $('page-title').classList.remove('hidden');
   $('page-subtitle').classList.remove('hidden');
   $('page-title').textContent = state.view === 'repos' ? 'Repos' : state.view === 'scans' ? 'Scans' : 'Queue';
@@ -129,8 +139,10 @@ function renderHeader() {
     const dismissed = Q.displayStatus(state.draft) === 'Dismissed';
     $('page-actions').innerHTML = `<span class="muted" id="save-indicator" role="status">${state.dirty ? 'Unsaved changes' : 'Saved'}</span><button type="button" class="button button-secondary" data-${dismissed ? 'restore' : 'dismiss'}>${dismissed ? 'Restore issue' : 'Dismiss'}</button>${safeUrl(state.draft.issueUrl) ? `<a class="button button-secondary" href="${escapeHtml(safeUrl(state.draft.issueUrl))}" target="_blank" rel="noreferrer">Open on GitHub</a>` : ''}<button class="button" type="submit" form="detail-form" id="save-button" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>`;
   } else if (state.view === 'repos') {
-    $('page-subtitle').textContent = `${repositoryChoices().length} available · ${state.repos.length} watched`;
-    $('page-actions').innerHTML = '<button class="button button-secondary" type="button" data-schedule>View schedule</button>';
+    $('page-subtitle').textContent = state.locked
+      ? (left ? `Pick a Bitcoin project below and check its open issues · ${left} free scan${left === 1 ? '' : 's'} left` : 'Free scans used — get a key from the Telegram bot to keep going')
+      : `${repositoryChoices().length} available · ${state.repos.length} watched`;
+    $('page-actions').innerHTML = state.locked ? '<button type="button" class="button" data-enter-key>I have a key</button>' : '<button class="button button-secondary" type="button" data-schedule>View schedule</button>';
   } else if (state.view === 'scans') {
     $('page-subtitle').textContent = state.health.currentRun ? 'A scan is running' : scheduleText();
     $('page-actions').innerHTML = state.locked ? unlockAction : scans;
@@ -402,7 +414,7 @@ function renderInspectionList() {
     repo.rateLimited ? `GitHub’s rate limit was reached, so some issues could not be read in detail${repo.github?.rateLimitedFor ? `; it resets in about ${minutes} minute${minutes === 1 ? '' : 's'}` : ''}.` : '',
     repo.github?.rejected ? 'The server’s GitHub token was rejected, so these requests ran anonymously.' : '',
   ].filter(Boolean).join(' ');
-  $('inspect-footer').innerHTML = `<p class="inspection-footer">Showing ${view.rows.length} of ${filtered ? `${view.matching} matching (${view.total} total)` : view.total} open issues. ${view.checked} read in detail; the other ${unread} are scored from labels, age, and activity only. ${note}</p><div class="inspect-actions">${view.remaining ? `<button class="button button-secondary" type="button" data-inspect-more>Show ${Math.min(25, view.remaining)} more</button>` : ''}${unread ? `<button class="button button-secondary" type="button" data-inspect-detail ${state.inspectBusy ? 'disabled' : ''}>${state.inspectBusy ? 'Reading…' : `Read the next ${Math.min(20, unread)} in detail`}</button>` : ''}</div>`;
+  $('inspect-footer').innerHTML = `<p class="inspection-footer">Showing ${view.rows.length} of ${filtered ? `${view.matching} matching (${view.total} total)` : view.total} open issues. ${view.checked} read in detail; the other ${unread} are scored from labels, age, and activity only. ${note}</p><div class="inspect-actions">${view.remaining ? `<button class="button button-secondary" type="button" data-inspect-more>Show ${Math.min(25, view.remaining)} more</button>` : ''}${unread && state.locked ? '<span class="muted">Get a key from the Telegram bot to read the rest in detail.</span>' : ''}${unread && !state.locked ? `<button class="button button-secondary" type="button" data-inspect-detail ${state.inspectBusy ? 'disabled' : ''}>${state.inspectBusy ? 'Reading…' : `Read the next ${Math.min(20, unread)} in detail`}</button>` : ''}</div>`;
   $('inspect-count').textContent = filtered ? `${view.matching} of ${total}` : `${total}`;
 }
 function renderInspection() {
@@ -413,7 +425,7 @@ function renderInspection() {
   const total = repo.totalOpenIssues ?? view.total;
   const pulls = typeof overview.openIssues === 'number' && !repo.truncated ? Math.max(0, overview.openIssues - total) : 0;
   const queuedHere = repositoryChoices().find(choice => choice.repo.toLowerCase() === repo.repo.toLowerCase())?.openMatches || 0;
-  $('repo-inspection-result').innerHTML = `<div class="inspection-header"><div><h2>${escapeHtml(repo.repo)}</h2><p>${escapeHtml(overview.description || overview.projectSummary || '')}</p></div><div class="inspection-buttons">${queuedHere ? `<button class="button button-secondary" type="button" data-view-queue="${escapeHtml(repo.repo)}">${queuedHere} in your queue</button>` : ''}<button class="button" type="button" data-watch="${escapeHtml(repo.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button></div></div><div class="repo-metrics"><div><strong>${total}</strong><span>open issues${pulls ? ` (plus ${pulls} pull requests)` : ''}</span></div><div><strong>${view.goodFirst}</strong><span>good first issue${view.goodFirst === 1 ? '' : 's'}</span></div><div><strong>${view.strong}</strong><span>unclaimed matches above 70</span></div><div><strong>${escapeHtml(overview.language || '—')}</strong><span>primary language</span></div></div><div class="inspect-toolbar"><label class="sr-only" for="inspect-search">Filter issues</label><input id="inspect-search" type="search" placeholder="Filter by title, label, or number" value="${escapeHtml(state.inspectView.query)}"><label class="check"><input id="inspect-hide-claimed" type="checkbox" ${state.inspectView.hideClaimed ? 'checked' : ''}> Hide claimed</label><span class="muted"><span id="inspect-count"></span> shown</span></div><div id="inspect-list"></div><div id="inspect-footer"></div>`;
+  $('repo-inspection-result').innerHTML = `<div class="inspection-header"><div><h2>${escapeHtml(repo.repo)}</h2><p>${escapeHtml(overview.description || overview.projectSummary || '')}</p></div><div class="inspection-buttons">${queuedHere ? `<button class="button button-secondary" type="button" data-view-queue="${escapeHtml(repo.repo)}">${queuedHere} in your queue</button>` : ''}${state.locked ? '' : `<button class="button" type="button" data-watch="${escapeHtml(repo.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button>`}</div></div><div class="repo-metrics"><div><strong>${total}</strong><span>open issues${pulls ? ` (plus ${pulls} pull requests)` : ''}</span></div><div><strong>${view.goodFirst}</strong><span>good first issue${view.goodFirst === 1 ? '' : 's'}</span></div><div><strong>${view.strong}</strong><span>unclaimed matches above 70</span></div><div><strong>${escapeHtml(overview.language || '—')}</strong><span>primary language</span></div></div><div class="inspect-toolbar"><label class="sr-only" for="inspect-search">Filter issues</label><input id="inspect-search" type="search" placeholder="Filter by title, label, or number" value="${escapeHtml(state.inspectView.query)}"><label class="check"><input id="inspect-hide-claimed" type="checkbox" ${state.inspectView.hideClaimed ? 'checked' : ''}> Hide claimed</label><span class="muted"><span id="inspect-count"></span> shown</span></div><div id="inspect-list"></div><div id="inspect-footer"></div>`;
   renderInspectionList();
 }
 async function inspectMoreDetail() {
@@ -433,12 +445,14 @@ async function inspectRepo(event) {
   button.disabled = true;
   $('repo-check-status').textContent = 'Listing every open issue…';
   try {
-    state.inspection = (await api('/api/repo-issues',{method:'POST',body:JSON.stringify({repo:$('repo-input').value.trim()})})).repo;
+    const data = await api('/api/repo-issues',{method:'POST',body:JSON.stringify({repo:$('repo-input').value.trim()})});
+    state.inspection = data.repo;
+    if (data.trial) state.trial = data.trial;
     state.inspectView = { query: '', hideClaimed: false, limit: 25 };
     renderInspection();
     $('repo-check-status').textContent = `Listed ${state.inspection.totalOpenIssues ?? state.inspection.issues.length} open issues in ${state.inspection.repo}.`;
   } catch (error) { $('repo-check-status').textContent = error.message; }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; if (state.locked) renderHeader(); }
 }
 async function watchRepo(repo) {
   const data = await api('/api/repositories',{method:'POST',body:JSON.stringify({repo})});
@@ -467,7 +481,7 @@ function renderDirectory() {
   $('project-filters').innerHTML = [{area:'',label:'All areas'},...areas].map(area => `<button type="button" data-area="${escapeHtml(area.area)}" aria-pressed="${state.area === area.area}">${escapeHtml(area.label)}</button>`).join('');
   $('project-directory').innerHTML = projects.filter(project => !state.area || project.area === state.area).map(project => {
     const watched = state.repos.some(repo => repo.repo.toLowerCase() === project.repo.toLowerCase());
-    return `<article class="project-item"><a href="https://github.com/${escapeHtml(project.repo)}" target="_blank" rel="noreferrer">${escapeHtml(project.repo)}</a><p>${escapeHtml(project.blurb)}</p><div class="section-line"><span>${escapeHtml(project.language)}</span><button class="text-button" type="button" data-watch="${escapeHtml(project.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button></div></article>`;
+    return `<article class="project-item"><a href="https://github.com/${escapeHtml(project.repo)}" target="_blank" rel="noreferrer">${escapeHtml(project.repo)}</a><p>${escapeHtml(project.blurb)}</p><div class="section-line"><span>${escapeHtml(project.language)}</span>${state.locked ? `<button class="text-button" type="button" data-choose-repo="${escapeHtml(project.repo)}">Scan issues</button>` : `<button class="text-button" type="button" data-watch="${escapeHtml(project.repo)}" ${watched ? 'disabled' : ''}>${watched ? 'Watching' : 'Add to watchlist'}</button>`}</div></article>`;
   }).join('');
 }
 function renderScans() {
@@ -500,7 +514,11 @@ function renderRanking() {
 }
 async function scan() {
   if (state.running) return;
-  if (state.locked) { if (await requestKey()) init(); return; }
+  if (state.locked) {
+    if (state.trial?.remaining) { navigate('#repos'); showNotice(`Pick a Bitcoin project to check its open issues. ${state.trial.remaining} free scan${state.trial.remaining === 1 ? '' : 's'} left.`); document.querySelector('.project-directory')?.setAttribute('open', ''); }
+    else if (await requestKey()) init();
+    return;
+  }
   state.running = true; renderHeader();
   showNotice('Scan started. You can keep browsing while it runs.');
   try {
@@ -556,7 +574,11 @@ function navigate(hash, force = false) {
 // What a visitor without a key sees: an invitation, not an interrogation.
 function lockedWelcome() {
   const bot = /^[A-Za-z0-9_]{3,64}$/.test(state.health.config?.botUsername || '') ? state.health.config.botUsername : '';
-  return `<div class="empty-state"><strong>This workspace is private</strong><p>Get your own daily Bitcoin issues instead: open the Telegram bot, send <code>/start</code>, and it picks open issues that fit your skills. <code>/dashboard</code> there gives you a key for this page.</p><div class="dialog-actions" style="justify-content:flex-start">${bot ? `<a class="button" href="https://t.me/${escapeHtml(bot)}" target="_blank" rel="noreferrer">Open the bot</a>` : ''}<button class="button button-secondary" type="button" data-enter-key>I have a key</button></div></div>`;
+  const left = state.trial?.remaining || 0;
+  const intro = left
+    ? `<strong>Try it before you sign up</strong><p>Pick any Bitcoin project and see every open issue, ranked, with the ones someone already claimed marked. You have <b>${left} free scan${left === 1 ? '' : 's'}</b>. After that, send <code>/dashboard</code> to the Telegram bot for a free key.</p>`
+    : `<strong>${state.trial ? 'You’ve used your free scans' : 'This workspace is private'}</strong><p>Get your own daily Bitcoin issues: open the Telegram bot, send <code>/start</code>, and it picks open issues that fit your skills. <code>/dashboard</code> there gives you a key for this page.</p>`;
+  return `<div class="empty-state">${intro}<div class="dialog-actions" style="justify-content:flex-start">${left ? '<a class="button" href="#repos">Try a free scan</a>' : ''}${bot ? `<a class="button" href="https://t.me/${escapeHtml(bot)}" target="_blank" rel="noreferrer">Open the bot</a>` : ''}<button class="button button-secondary" type="button" data-enter-key>I have a key</button></div></div>`;
 }
 function renderLockedWelcome() {
   $('queue-body').setAttribute('aria-busy','false');
@@ -566,9 +588,11 @@ function renderLockedWelcome() {
 
 async function init() {
   state.locked = false;
+  state.trial = null;
   const results = await Promise.allSettled([loadItems(),loadRepos(),loadHealth()]);
   const error = results.find(result=>result.status==='rejected');
   if (error && error.reason && error.reason.locked) {
+    state.trial = (await fetch('/api/repo-issues').then(response => response.ok ? response.json() : {}).catch(() => ({}))).trial || state.trial;
     renderLockedWelcome();
   } else if (error) {
     showNotice(error.reason.message,true);
