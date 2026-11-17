@@ -1,6 +1,6 @@
 # Bitcoin Contributor Intelligence
 
-**Live:** dashboard at [btc-opensource-projects.vercel.app](https://btc-opensource-projects.vercel.app) · Telegram bot [@btc_opensource_projects_bot](https://t.me/btc_opensource_projects_bot)
+**Live:** dashboard at [www.btcopensource.space](https://www.btcopensource.space) · Telegram bot [@btc_opensource_projects_bot](https://t.me/btc_opensource_projects_bot)
 
 Finding a Bitcoin issue to work on is not the hard part. There are thousands of
 open issues across Core, Lightning, wallets, privacy and ecash. The hard part is
