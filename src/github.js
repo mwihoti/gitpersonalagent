@@ -422,9 +422,10 @@ async function fetchAllIssueComments(issue, options = {}) {
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
   const pages = lastPage === 1 ? [1] : [1, lastPage];
   const collected = [];
+  let failed = false;
   for (const page of pages) {
     const res = await githubRequest(`${issue.comments_url}?per_page=${pageSize}&page=${page}`);
-    if (!res.ok) break;
+    if (!res.ok) { failed = true; break; }
     const batch = await res.json();
     if (Array.isArray(batch)) collected.push(...batch);
   }
@@ -436,8 +437,12 @@ async function fetchAllIssueComments(issue, options = {}) {
     seen.add(comment.id);
     unique.push(comment);
   }
-  if (unique.length <= max) return unique;
-  return [...unique.slice(0, head), ...unique.slice(-(max - head))];
+  // `complete` says the caller saw the whole thread: every page loaded, no
+  // middle pages skipped, nothing trimmed below. Quotes from the thread are
+  // only trusted when it is true, since a missing comment may withdraw one.
+  const kept = unique.length <= max ? unique : [...unique.slice(0, head), ...unique.slice(-(max - head))];
+  kept.complete = !failed && lastPage <= 2 && unique.length >= total && kept.length === unique.length;
+  return kept;
 }
 
 async function fetchRepoFile(repo, filePath, options = {}) {

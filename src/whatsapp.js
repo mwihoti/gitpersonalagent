@@ -14,7 +14,7 @@ const matching = require("./matching");
 const { listBots, primaryBot } = require("./bots");
 const { formatAge, normalizeUrl } = require("./issue-tracking");
 const { updateOpportunity } = require("./airtable");
-const { analyzeIssue } = require("./issue-analysis");
+const { analyzeIssue, SPAN_LIMIT } = require("./issue-analysis");
 const { parseIssueUrl } = require("./github");
 const { DISMISS_REASONS } = require("./feedback");
 const browse = require("./browse");
@@ -332,10 +332,14 @@ function cleanText(value) {
     .trim();
 }
 
+// Counts code points, so an emoji is never split into a lone surrogate that
+// Telegram would reject.
 function truncate(value, limit) {
   const text = cleanText(value);
   if (text.length <= limit) return text;
-  return `${text.slice(0, Math.max(0, limit - 1)).trim()}…`;
+  const chars = Array.from(text);
+  if (chars.length <= limit) return text;
+  return `${chars.slice(0, Math.max(0, limit - 1)).join("").trim()}…`;
 }
 
 function effortLabel(value) {
@@ -368,6 +372,40 @@ function stripHtml(value) {
 function isEmptyTip(value) {
   const text = cleanText(value).toLowerCase().replace(/[.!]+$/, "");
   return !text || ["n/a", "na", "none", "not applicable", "no tip", "-", "tbd"].includes(text);
+}
+
+// Quotes from the thread that were matched to a real comment, maintainers
+// first, then newest. Each links the exact comment and carries its real date,
+// so the reader can judge how fresh a "happy to review a PR" really is.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function shortDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  return `${Number(match[3])} ${MONTHS[Number(match[2]) - 1] || ""} ${match[1]}`;
+}
+
+function evidenceLines(evidence, limit = 2) {
+  const verified = (Array.isArray(evidence) ? evidence : []).filter((item) => item && item.verified && item.quote);
+  const ordered = verified
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => Number(b.item.role === "maintainer") - Number(a.item.role === "maintainer")
+      || String(b.item.when || "").localeCompare(String(a.item.when || ""))
+      || a.index - b.index)
+    .map(({ item }) => item);
+  // The resolver only verifies whole paragraphs up to SPAN_LIMIT; anything
+  // longer is dropped, never cut, since the cut could remove a qualifier.
+  return ordered.filter((item) => Array.from(String(item.quote)).length <= SPAN_LIMIT).slice(0, limit).map((item) => {
+    const date = shortDate(item.when);
+    const age = formatAge(item.when);
+    const label = [
+      `${item.who ? `@${item.who}` : "comment"}${item.role ? ` (${item.role})` : ""}`,
+      [date, age].filter(Boolean).join(", "),
+    ].filter(Boolean).join(" · ");
+    // Verified quotes are the author's whole comment, verbatim: escaped only,
+    // never trimmed or re-formatted (backticks stay literal).
+    return `“${escapeHtml(String(item.quote).trim())}”\n— ${link(label, item.url, 90)}`;
+  });
 }
 
 function link(title, url, limit = 100) {
@@ -633,6 +671,8 @@ function buildOpportunityMessage(item, index, total, options = {}) {
   if (item.maintainer_wants) {
     body.push(`<b>Maintainer wants</b>\n${html(truncate(item.maintainer_wants, 450))}`);
   }
+  const quotes = evidenceLines(item.evidence);
+  if (quotes.length) body.push(`<b>From the thread</b>\n${quotes.join("\n")}`);
   if (item.current_state && item.current_state !== "available" && item.state_reason) {
     body.push(`<b>State</b>\n${html(item.current_state.replace(/_/g, " "))}: ${html(truncate(item.state_reason, 200))}`);
   }
@@ -699,6 +739,8 @@ function analysisReply(result) {
     `Effort ${html(a.effort)} · Impact ${html(a.impact)} · Confidence ${a.confidence || 0}%${result.model === "heuristic" ? " · heuristic" : ""}`,
   ];
   if (a.maintainerWants) lines.push("", `<b>Maintainer wants</b>\n${html(truncate(a.maintainerWants, 500))}`);
+  const quotes = evidenceLines(a.evidence, 3);
+  if (quotes.length) lines.push("", `<b>From the thread</b>\n${quotes.join("\n")}`);
   if ((a.plan || []).length) lines.push("", `<b>Plan</b>\n${a.plan.slice(0, 6).map((step, i) => `${i + 1}. ${html(truncate(step, 160))}`).join("\n")}`);
   if ((a.filesToChange || []).length) lines.push("", `<b>Files</b>\n${a.filesToChange.slice(0, 5).map((f) => `• <code>${escapeHtml(f.path)}</code>`).join("\n")}`);
   if ((a.openQuestions || []).length) lines.push("", `<b>Ask first</b>\n${a.openQuestions.slice(0, 3).map((q) => `• ${html(truncate(q, 160))}`).join("\n")}`);
@@ -1510,6 +1552,7 @@ module.exports = {
   unsubscribeTelegramChat,
   sendTelegramToChat,
   setTelegramCommands,
+  evidenceLines,
   normalizeCommand,
   parseScanMode,
   parseScanRequest,

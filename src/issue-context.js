@@ -61,13 +61,23 @@ function excerptAround(content, needle, options = {}) {
   };
 }
 
+// Cuts at a code-point boundary: a split emoji leaves a lone surrogate that
+// Telegram rejects.
+function clipText(value, limit) {
+  const text = String(value || '');
+  if (text.length <= limit) return text;
+  return text.slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
+}
+
 function shapeComment(comment) {
   return {
     id: comment.id,
+    url: comment.html_url || '',
     author: comment.user?.login || 'unknown',
     authorAssociation: comment.author_association || '',
     createdAt: comment.created_at || '',
-    body: String(comment.body || '').slice(0, 1200),
+    body: clipText(comment.body, 1200),
+    truncated: String(comment.body || '').length > 1200,
     reactions: Number(comment.reactions?.total_count || 0),
   };
 }
@@ -189,7 +199,8 @@ async function buildIssueContext(repo, number, options = {}) {
       number: issue.number,
       title: issue.title,
       url: issue.html_url,
-      body: String(issue.body || '').slice(0, 8000),
+      body: clipText(issue.body, 8000),
+      bodyTruncated: String(issue.body || '').length > 8000,
       bodyPlain: stripMarkdown(issue.body).slice(0, 600),
       labels: (issue.labels || []).map(label => label.name),
       author: issue.user?.login || '',
@@ -203,6 +214,8 @@ async function buildIssueContext(repo, number, options = {}) {
       milestone: issue.milestone?.title || '',
     },
     comments,
+    // Whether every comment in the thread was read (see fetchAllIssueComments).
+    commentsComplete: Number(issue.comments || 0) === 0 || rawComments.complete === true,
     claim,
     pullRequests,
     contributing: contributing
