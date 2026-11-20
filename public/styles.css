@@ -361,4 +361,13 @@ summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .telegram-cta strong { font-size: 13px; }
 .telegram-cta p { margin: 0; color: var(--muted); line-height: 1.45; }
 .telegram-cta .button { justify-self: start; }
+.support-card { margin: 12px 12px 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; font-size: 12px; }
+.support-card strong { font-size: 13px; }
+.support-card p { margin: 0; color: var(--muted); line-height: 1.45; }
+.ln-address { display: grid; gap: 4px; justify-items: start; }
+.ln-address code { display: block; max-width: 100%; font-size: 10.5px; background: #edf1f5; padding: 3px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+.support-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+.support-actions a { white-space: nowrap; }
+.support-contact a { color: inherit; }
+@media (max-width: 760px) { .support-card { display: none; } }
 .telegram-cta .cta-steps code { font-size: 11px; background: #edf1f5; padding: 1px 4px; border-radius: 3px; }
