@@ -326,6 +326,10 @@ const BROWSE_HELP =
 const PERSONAL_HELP =
   "\n\nMake it yours:\n/github <username> - learn my languages and experience from public GitHub\n/skills rust, lightning - tell me directly\n/level newcomer|intermediate|experienced\n/match - issues that fit me right now\n/me - what I know about you\n/dashboard - personal key for the web dashboard\n/forget - delete your profile";
 
+// Closes /help for everyone.
+const SUPPORT_HELP =
+  "\n\nLike it? Send sats: ⚡ bloomingloyal491508@getalby.com\nFeedback: @Mwihoti";
+
 function cleanText(value) {
   return String(value || "")
     .replace(/\s+/g, " ")
@@ -1458,8 +1462,8 @@ async function handleTelegramUpdate(update, onScan, bot, deps = {}) {
   } else if (command === "help") {
     await reply(
       (await isSubscriber(chatId, botId))
-        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues" + BROWSE_HELP + PERSONAL_HELP
-        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot" + BROWSE_HELP + PERSONAL_HELP,
+        ? "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot\n/analyze <issue url> - deep read of one issue\n/pr <issue url> <pr url> - link your PR so I track it\n/scan - top prioritized issues\n/scan all - broad open-issue scan\n/scan goodfirst - good first issues\n/scan medium - medium-effort issues" + BROWSE_HELP + PERSONAL_HELP + SUPPORT_HELP
+        : "Commands:\n/start - subscribe to daily updates\n/stop - unsubscribe\n/status - check bot" + BROWSE_HELP + PERSONAL_HELP + SUPPORT_HELP,
     );
   }
 }

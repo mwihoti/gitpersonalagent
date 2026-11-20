@@ -950,6 +950,15 @@ danagent/
 
 ---
 
+## Support and contact
+
+BTC Open Source is free and open source. If it helped you, you can send sats:
+
+- ⚡ Lightning address: `bloomingloyal491508@getalby.com` ([send sats](https://getalby.com/p/bloomingloyal491508))
+- Feedback, bugs and ideas: [@Mwihoti on Telegram](https://t.me/Mwihoti) or danielmwihoti@gmail.com
+
+---
+
 ## Licence
 
 MIT

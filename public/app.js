@@ -647,6 +647,7 @@ document.addEventListener('click',async event=>{
   if(row && !event.target.closest('a,button')){navigate(`#issue/${encodeURIComponent(row.dataset.issue)}`);return;}
   if(!button || button.disabled)return;
   try{
+    if(button.dataset.copy){try{await navigator.clipboard.writeText(button.dataset.copy);toast('Lightning address copied.');}catch{toast(`Couldn’t copy automatically: ${button.dataset.copy}`);}return;}
     if(button.hasAttribute('data-close-dialog'))button.closest('dialog').close('cancel');
     if(button.hasAttribute('data-scan'))await scan();
     if(button.hasAttribute('data-retry'))await init();
